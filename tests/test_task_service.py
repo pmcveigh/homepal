@@ -28,7 +28,10 @@ def test_invalid_transition_raises(session):
 
 
 def test_completion_creates_next_recurring_task(session):
-    schedule = RecurringSchedule(recurrence_type=RecurrenceType.EVERY_N_DAYS, interval_value=30)
+    schedule = RecurringSchedule(
+        recurrence_type=RecurrenceType.AFTER_COMPLETION_N_DAYS,
+        completion_offset=30,
+    )
     task = Task(
         title="Change filter",
         description="HVAC filter",
@@ -47,4 +50,25 @@ def test_completion_creates_next_recurring_task(session):
     assert len(tasks) == 2
     new_task = next(t for t in tasks if t.id != task.id)
     assert new_task.status == TaskStatus.OPEN
+    assert new_task.parent_task_id == task.id
     assert new_task.due_date == date.today() + timedelta(days=30)
+
+
+def test_dashboard_stats_counts(session):
+    today = date(2026, 1, 10)
+    session.add_all(
+        [
+            Task(title="Open overdue", description="d", priority=Priority.P1, status=TaskStatus.OPEN, room_id="r", due_date=today - timedelta(days=1)),
+            Task(title="In progress", description="d", priority=Priority.P2, status=TaskStatus.IN_PROGRESS, room_id="r", due_date=today + timedelta(days=2)),
+            Task(title="Archived", description="d", priority=Priority.P1, status=TaskStatus.ARCHIVED, room_id="r"),
+        ]
+    )
+    session.commit()
+
+    svc = TaskService(session)
+    stats = svc.get_dashboard_stats(today=today)
+
+    assert stats.open_tasks == 2
+    assert stats.overdue_tasks == 1
+    assert stats.p1_tasks == 1
+    assert stats.due_this_week == 1
