@@ -72,3 +72,14 @@ def test_dashboard_stats_counts(session):
     assert stats.overdue_tasks == 1
     assert stats.p1_tasks == 1
     assert stats.due_this_week == 1
+
+
+def test_create_task_uses_default_room(session):
+    svc = TaskService(session)
+    created = svc.create_task(title="Replace bulbs", description="Hallway lights")
+    session.commit()
+
+    stored = session.get(Task, created.id)
+    assert stored is not None
+    assert stored.room_id is not None
+    assert stored.status == TaskStatus.OPEN

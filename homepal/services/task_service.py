@@ -7,7 +7,16 @@ from getpass import getuser
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from homepal.models import ALLOWED_TRANSITIONS, Priority, Task, TaskHistory, TaskStatus, compute_next_due_date
+from homepal.models import (
+    ALLOWED_TRANSITIONS,
+    Priority,
+    Property,
+    Room,
+    Task,
+    TaskHistory,
+    TaskStatus,
+    compute_next_due_date,
+)
 
 
 @dataclass(slots=True)
@@ -31,6 +40,47 @@ class TaskService:
         self._history(task.id, "status", old.value, new_status.value)
         if new_status == TaskStatus.COMPLETED and task.recurring_schedule:
             self._create_next_recurring_instance(task)
+
+    def ensure_default_room(self) -> Room:
+        room = self.session.scalar(select(Room).where(Room.name == "General"))
+        if room:
+            return room
+
+        prop = self.session.scalar(select(Property).where(Property.name == "Home"))
+        if prop is None:
+            prop = Property(name="Home", address="")
+            self.session.add(prop)
+            self.session.flush()
+
+        room = Room(property_id=prop.id, name="General", description="Default room for uncategorized tasks")
+        self.session.add(room)
+        self.session.flush()
+        return room
+
+    def create_task(
+        self,
+        *,
+        title: str,
+        description: str,
+        priority: Priority = Priority.P3,
+        due_date: date | None = None,
+    ) -> Task:
+        room = self.ensure_default_room()
+        task = Task(
+            title=title.strip(),
+            description=description.strip() or "No description provided",
+            priority=priority,
+            status=TaskStatus.OPEN,
+            room_id=room.id,
+            due_date=due_date,
+        )
+        self.session.add(task)
+        self.session.flush()
+        self._history(task.id, "status", None, TaskStatus.OPEN.value)
+        return task
+
+    def list_tasks(self) -> list[Task]:
+        return list(self.session.scalars(select(Task).order_by(Task.created_at.desc())))
 
     def get_dashboard_stats(self, today: date | None = None) -> DashboardStats:
         today = today or date.today()

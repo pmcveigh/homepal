@@ -7,7 +7,8 @@ from logging.handlers import RotatingFileHandler
 from PySide6.QtWidgets import QApplication
 
 from homepal.config import AppPaths, ensure_directories
-from homepal.db import Base, configure_session, create_sqlite_engine, run_integrity_check
+from homepal.db import Base, SessionLocal, configure_session, create_sqlite_engine, run_integrity_check
+from homepal.services.task_service import TaskService
 from homepal.views.main_window import MainWindow
 
 
@@ -41,9 +42,13 @@ def main() -> int:
     bootstrap_db(paths)
 
     app = QApplication(sys.argv)
-    window = MainWindow()
+    session = SessionLocal()
+    task_service = TaskService(session)
+    window = MainWindow(task_service)
     window.show()
-    return app.exec()
+    exit_code = app.exec()
+    session.close()
+    return exit_code
 
 
 if __name__ == "__main__":
