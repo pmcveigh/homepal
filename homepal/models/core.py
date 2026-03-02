@@ -39,6 +39,26 @@ class TaskStatus(str, enum.Enum):
     ARCHIVED = "Archived"
 
 
+class LinkRole(str, enum.Enum):
+    ABOUT = "about"
+    USES = "uses"
+    REQUIRES = "requires"
+
+
+class AttachmentOwner(str, enum.Enum):
+    TASK = "task"
+    ASSET = "asset"
+
+
+class ValueType(str, enum.Enum):
+    TEXT = "text"
+    INT = "int"
+    DECIMAL = "decimal"
+    BOOL = "bool"
+    DATE = "date"
+    CHOICE = "choice"
+
+
 class RecurrenceType(str, enum.Enum):
     EVERY_N_DAYS = "every_n_days"
     EVERY_N_MONTHS = "every_n_months"
@@ -67,6 +87,15 @@ class Room(Base):
     notes: Mapped[str | None] = mapped_column(Text)
 
 
+class AssetCategory(Base):
+    __tablename__ = "asset_categories"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    code: Mapped[str] = mapped_column(String(60), nullable=False, unique=True)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
 class Asset(Base):
     __tablename__ = "assets"
 
@@ -74,10 +103,24 @@ class Asset(Base):
     room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     category: Mapped[str] = mapped_column(String(100), nullable=False)
+    category_id: Mapped[str | None] = mapped_column(ForeignKey("asset_categories.id"))
     installation_date: Mapped[date | None] = mapped_column(Date)
     warranty_expiry: Mapped[date | None] = mapped_column(Date)
     last_serviced_date: Mapped[date | None] = mapped_column(Date)
     notes: Mapped[str | None] = mapped_column(Text)
+
+
+class AssetRoomLink(Base):
+    __tablename__ = "asset_room_links"
+    __table_args__ = (
+        Index("ix_asset_room_room_id", "room_id"),
+        Index("ix_asset_room_asset_id", "asset_id"),
+    )
+
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id"), primary_key=True)
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), primary_key=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    location_notes: Mapped[str | None] = mapped_column(String(200))
 
 
 class RecurringSchedule(Base):
@@ -129,6 +172,7 @@ class Attachment(Base):
     __tablename__ = "attachments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_type: Mapped[AttachmentOwner] = mapped_column(Enum(AttachmentOwner), default=AttachmentOwner.TASK, nullable=False)
     task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"))
     asset_id: Mapped[str | None] = mapped_column(ForeignKey("assets.id"))
     file_path: Mapped[str] = mapped_column(String(2048), nullable=False)
@@ -145,6 +189,66 @@ class TaskHistory(Base):
     old_value: Mapped[str | None] = mapped_column(Text)
     new_value: Mapped[str | None] = mapped_column(Text)
     user_identifier: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class TaskRoomLink(Base):
+    __tablename__ = "task_room_links"
+
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), primary_key=True)
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id"), primary_key=True)
+
+
+class TaskAssetLink(Base):
+    __tablename__ = "task_asset_links"
+    __table_args__ = (
+        Index("ix_task_asset_asset_id", "asset_id"),
+        Index("ix_task_asset_role", "role"),
+    )
+
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id"), primary_key=True)
+    role: Mapped[LinkRole] = mapped_column(Enum(LinkRole), primary_key=True)
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    unit: Mapped[str | None] = mapped_column(String(30))
+
+
+class AttributeDefinition(Base):
+    __tablename__ = "attribute_definitions"
+    __table_args__ = (
+        Index("ix_attr_def_scope", "applies_to", "category_id", "room_type"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    applies_to: Mapped[str] = mapped_column(String(10), nullable=False)
+    category_id: Mapped[str | None] = mapped_column(ForeignKey("asset_categories.id"))
+    room_type: Mapped[str | None] = mapped_column(String(40))
+    key: Mapped[str] = mapped_column(String(80), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    value_type: Mapped[ValueType] = mapped_column(Enum(ValueType), nullable=False)
+    unit: Mapped[str | None] = mapped_column(String(20))
+    choices_csv: Mapped[str | None] = mapped_column(Text)
+    required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    searchable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    filterable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class AttributeValue(Base):
+    __tablename__ = "attribute_values"
+    __table_args__ = (
+        Index("ix_attr_values_room_id", "room_id"),
+        Index("ix_attr_values_asset_id", "asset_id"),
+        Index("ix_attr_values_definition_id", "definition_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    room_id: Mapped[str | None] = mapped_column(ForeignKey("rooms.id"))
+    asset_id: Mapped[str | None] = mapped_column(ForeignKey("assets.id"))
+    definition_id: Mapped[str] = mapped_column(ForeignKey("attribute_definitions.id"), nullable=False)
+    value_text: Mapped[str | None] = mapped_column(Text)
+    value_int: Mapped[int | None]
+    value_decimal: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
+    value_bool: Mapped[bool | None] = mapped_column(Boolean)
+    value_date: Mapped[date | None] = mapped_column(Date)
 
 
 ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
