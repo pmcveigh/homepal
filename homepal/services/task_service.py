@@ -14,6 +14,7 @@ from homepal.models import (
     AssetCategory,
     AssetRoomLink,
     AttributeDefinition,
+    AttributeValue,
     LinkRole,
     Priority,
     Property,
@@ -23,6 +24,7 @@ from homepal.models import (
     TaskHistory,
     TaskRoomLink,
     TaskStatus,
+    ValueType,
     compute_next_due_date,
 )
 
@@ -98,6 +100,14 @@ class TaskService:
 
     def list_rooms(self) -> list[Room]:
         return list(self.session.scalars(select(Room).order_by(Room.name.asc())))
+
+
+    def list_asset_categories(self) -> list[AssetCategory]:
+        return list(
+            self.session.scalars(
+                select(AssetCategory).where(AssetCategory.is_active.is_(True)).order_by(AssetCategory.display_name.asc())
+            )
+        )
 
     def get_or_create_asset_category(self, code: str, display_name: str | None = None) -> AssetCategory:
         normalized = code.strip().lower()
@@ -360,16 +370,98 @@ class TaskService:
     ) -> list[AttributeDefinition]:
         query = select(AttributeDefinition).where(AttributeDefinition.applies_to == applies_to)
         if applies_to == "asset":
-            query = query.where(or_(AttributeDefinition.category_id.is_(None), AttributeDefinition.category_id == category_id))
+            query = query.where(or_(AttributeDefinition.category_id == category_id, AttributeDefinition.category_id.is_(None)))
         if applies_to == "room":
             query = query.where(
                 or_(
-                    AttributeDefinition.room_type.is_(None),
-                    AttributeDefinition.room_type == "any",
                     AttributeDefinition.room_type == room_type,
+                    AttributeDefinition.room_type == "any",
+                    AttributeDefinition.room_type.is_(None),
                 )
             )
-        return list(self.session.scalars(query.order_by(AttributeDefinition.display_name.asc())))
+
+        definitions = list(self.session.scalars(query))
+
+        def scope_rank(item: AttributeDefinition) -> tuple[int, str]:
+            if applies_to == "asset":
+                return (0 if item.category_id == category_id and category_id else 1, item.display_name.lower())
+            if applies_to == "room":
+                if item.room_type == room_type and room_type not in (None, "any"):
+                    return (0, item.display_name.lower())
+                if item.room_type == "any":
+                    return (1, item.display_name.lower())
+                return (2, item.display_name.lower())
+            return (0, item.display_name.lower())
+
+        return sorted(definitions, key=scope_rank)
+
+    def get_attribute_values(self, *, owner_type: str, owner_id: str | None) -> dict[str, object]:
+        if not owner_id:
+            return {}
+
+        query = select(AttributeValue).where(
+            AttributeValue.asset_id == owner_id if owner_type == "asset" else AttributeValue.room_id == owner_id
+        )
+        values: dict[str, object] = {}
+        for row in self.session.scalars(query):
+            if row.value_text is not None:
+                values[row.definition_id] = row.value_text
+            elif row.value_int is not None:
+                values[row.definition_id] = row.value_int
+            elif row.value_decimal is not None:
+                values[row.definition_id] = float(row.value_decimal)
+            elif row.value_bool is not None:
+                values[row.definition_id] = row.value_bool
+            elif row.value_date is not None:
+                values[row.definition_id] = row.value_date
+            else:
+                values[row.definition_id] = None
+        return values
+
+    def upsert_attribute_values(
+        self,
+        *,
+        owner_type: str,
+        owner_id: str,
+        values: dict[str, object],
+        active_definition_ids: list[str],
+        definitions: list[AttributeDefinition],
+    ) -> None:
+        target_filter = AttributeValue.asset_id == owner_id if owner_type == "asset" else AttributeValue.room_id == owner_id
+        existing = {row.definition_id: row for row in self.session.scalars(select(AttributeValue).where(target_filter))}
+        definition_map = {item.id: item for item in definitions}
+
+        stale_ids = [item_id for item_id in existing if item_id not in active_definition_ids]
+        if stale_ids:
+            self.session.query(AttributeValue).where(target_filter, AttributeValue.definition_id.in_(stale_ids)).delete(synchronize_session=False)
+
+        for definition_id, value in values.items():
+            definition = definition_map[definition_id]
+            row = existing.get(definition_id)
+            if row is None:
+                row = AttributeValue(definition_id=definition_id, asset_id=owner_id if owner_type == "asset" else None, room_id=owner_id if owner_type == "room" else None)
+                self.session.add(row)
+
+            row.value_text = None
+            row.value_int = None
+            row.value_decimal = None
+            row.value_bool = None
+            row.value_date = None
+
+            if value is None:
+                continue
+            if definition.value_type in {ValueType.TEXT, ValueType.CHOICE}:
+                row.value_text = str(value)
+            elif definition.value_type == ValueType.INT:
+                row.value_int = int(value)
+            elif definition.value_type == ValueType.DECIMAL:
+                row.value_decimal = Decimal(str(value))
+            elif definition.value_type == ValueType.BOOL:
+                row.value_bool = bool(value)
+            elif definition.value_type == ValueType.DATE:
+                row.value_date = value
+
+        self.session.flush()
 
     def _create_next_recurring_instance(self, completed_task: Task) -> None:
         next_due = compute_next_due_date(completed_task.recurring_schedule, date.today())

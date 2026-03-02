@@ -4,10 +4,11 @@ import logging
 import sys
 from logging.handlers import RotatingFileHandler
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from homepal.config import AppPaths, ensure_directories
 from homepal.db import Base, SessionLocal, configure_session, create_sqlite_engine, run_integrity_check
+from homepal.models import AssetCategory, AttributeDefinition
 from homepal.services.task_service import TaskService
 from homepal.views.main_window import MainWindow
 
@@ -36,6 +37,19 @@ def bootstrap_db(paths: AppPaths) -> None:
     Base.metadata.create_all(engine)
 
 
+def verify_seed_data(session) -> bool:
+    category_count = session.query(AssetCategory).count()
+    attr_count = session.query(AttributeDefinition).count()
+    if category_count == 0 or attr_count == 0:
+        QMessageBox.critical(
+            None,
+            "Database setup error",
+            "Required seed data is missing (asset_categories / attribute_definitions).\nRun migrations before launching Homepal.",
+        )
+        return False
+    return True
+
+
 def main() -> int:
     paths = ensure_directories()
     configure_logging(paths)
@@ -43,6 +57,10 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     session = SessionLocal()
+    if not verify_seed_data(session):
+        session.close()
+        return 1
+
     task_service = TaskService(session)
     window = MainWindow(task_service)
     window.show()
