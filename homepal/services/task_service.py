@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, timedelta
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from getpass import getuser
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from homepal.models import (
@@ -49,6 +49,72 @@ class ReportSummary:
     estimated_cost_total: Decimal
     actual_cost_total: Decimal
 
+
+@dataclass(slots=True)
+class TaskListFilters:
+    statuses: list[TaskStatus] = field(default_factory=list)
+    priorities: list[Priority] = field(default_factory=list)
+    due_range: str = "any"
+    room_id: str | None = None
+    asset_id: str | None = None
+    search: str = ""
+
+
+@dataclass(slots=True)
+class TaskListRow:
+    id: str
+    title: str
+    description: str
+    priority: Priority
+    status: TaskStatus
+    due_date: date | None
+    room_count: int
+    about_asset_count: int
+    is_urgent: bool
+    requires_follow_up: bool
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class TaskEditorDTO:
+    id: str | None = None
+    title: str = ""
+    description: str = ""
+    priority: Priority = Priority.P3
+    status: TaskStatus = TaskStatus.OPEN
+    due_date: date | None = None
+    estimated_cost: Decimal | None = None
+    actual_cost: Decimal | None = None
+    effort_hours: Decimal | None = None
+    follow_up_needed: bool = False
+    room_ids: list[str] = field(default_factory=list)
+    about_asset_ids: list[str] = field(default_factory=list)
+    uses_asset_ids: list[str] = field(default_factory=list)
+    requires_assets: list[tuple[str, Decimal | None, str | None]] = field(default_factory=list)
+
+
+
+
+@dataclass(slots=True)
+class RoomListRow:
+    id: str
+    name: str
+    room_type: str
+    floor_level: str | None
+    asset_count: int
+    open_tasks_count: int
+    overdue_tasks_count: int
+
+
+@dataclass(slots=True)
+class AssetListRow:
+    id: str
+    name: str
+    category: str
+    is_fixed: bool
+    warranty_expiry: date | None
+    value: Decimal | None
+    is_primary_in_room: bool
 
 class TaskService:
     def __init__(self, session: Session):
@@ -263,6 +329,168 @@ class TaskService:
     def list_tasks(self) -> list[Task]:
         return list(self.session.scalars(select(Task).order_by(Task.created_at.desc())))
 
+    def list_task_rows(self, filters: TaskListFilters | None = None) -> list[TaskListRow]:
+        filters = filters or TaskListFilters()
+        room_count_subq = (
+            select(TaskRoomLink.task_id, func.count(TaskRoomLink.room_id).label("room_count"))
+            .group_by(TaskRoomLink.task_id)
+            .subquery()
+        )
+        about_count_subq = (
+            select(TaskAssetLink.task_id, func.count(TaskAssetLink.asset_id).label("about_count"))
+            .where(TaskAssetLink.role == LinkRole.ABOUT)
+            .group_by(TaskAssetLink.task_id)
+            .subquery()
+        )
+
+        query = (
+            select(
+                Task.id,
+                Task.title,
+                Task.description,
+                Task.priority,
+                Task.status,
+                Task.due_date,
+                func.coalesce(room_count_subq.c.room_count, 0),
+                func.coalesce(about_count_subq.c.about_count, 0),
+                Task.is_urgent,
+                Task.requires_follow_up,
+                Task.updated_at,
+            )
+            .outerjoin(room_count_subq, room_count_subq.c.task_id == Task.id)
+            .outerjoin(about_count_subq, about_count_subq.c.task_id == Task.id)
+            .order_by(Task.updated_at.desc())
+        )
+
+        if filters.statuses:
+            query = query.where(Task.status.in_(filters.statuses))
+        if filters.priorities:
+            query = query.where(Task.priority.in_(filters.priorities))
+        if filters.room_id:
+            query = query.where(select(TaskRoomLink.task_id).where(TaskRoomLink.room_id == filters.room_id).exists())
+        if filters.asset_id:
+            query = query.where(select(TaskAssetLink.task_id).where(TaskAssetLink.asset_id == filters.asset_id).exists())
+
+        today = date.today()
+        if filters.due_range == "overdue":
+            query = query.where(Task.due_date.is_not(None), Task.due_date < today)
+        elif filters.due_range == "next7":
+            query = query.where(Task.due_date.is_not(None), Task.due_date >= today, Task.due_date <= today + timedelta(days=7))
+        elif filters.due_range == "next30":
+            query = query.where(Task.due_date.is_not(None), Task.due_date >= today, Task.due_date <= today + timedelta(days=30))
+
+        if filters.search.strip():
+            q = f"%{filters.search.strip()}%"
+            query = query.where(or_(Task.title.ilike(q), Task.description.ilike(q)))
+
+        rows = self.session.execute(query).all()
+        return [
+            TaskListRow(
+                id=row[0],
+                title=row[1],
+                description=row[2],
+                priority=row[3],
+                status=row[4],
+                due_date=row[5],
+                room_count=int(row[6]),
+                about_asset_count=int(row[7]),
+                is_urgent=bool(row[8]),
+                requires_follow_up=bool(row[9]),
+                updated_at=row[10],
+            )
+            for row in rows
+        ]
+
+    def get_task_editor_dto(self, task_id: str) -> TaskEditorDTO:
+        task = self.session.get(Task, task_id)
+        if not task:
+            raise ValueError("Task not found")
+        room_ids = list(self.session.scalars(select(TaskRoomLink.room_id).where(TaskRoomLink.task_id == task_id)))
+        about_assets = list(self.session.scalars(select(TaskAssetLink.asset_id).where(TaskAssetLink.task_id == task_id, TaskAssetLink.role == LinkRole.ABOUT)))
+        uses_assets = list(self.session.scalars(select(TaskAssetLink.asset_id).where(TaskAssetLink.task_id == task_id, TaskAssetLink.role == LinkRole.USES)))
+        requires_assets = list(
+            self.session.execute(
+                select(TaskAssetLink.asset_id, TaskAssetLink.quantity, TaskAssetLink.unit).where(
+                    TaskAssetLink.task_id == task_id,
+                    TaskAssetLink.role == LinkRole.REQUIRES,
+                )
+            )
+        )
+        return TaskEditorDTO(
+            id=task.id,
+            title=task.title,
+            description=task.description,
+            priority=task.priority,
+            status=task.status,
+            due_date=task.due_date,
+            estimated_cost=task.estimated_cost,
+            actual_cost=task.actual_cost,
+            effort_hours=task.estimated_effort_hours,
+            follow_up_needed=task.requires_follow_up,
+            room_ids=room_ids,
+            about_asset_ids=about_assets,
+            uses_asset_ids=uses_assets,
+            requires_assets=[(item[0], item[1], item[2]) for item in requires_assets],
+        )
+
+    def save_task_editor_dto(self, dto: TaskEditorDTO) -> Task:
+        if not dto.room_ids and not dto.about_asset_ids:
+            raise ValueError("Task must have at least one room or ABOUT asset")
+
+        if dto.id:
+            task = self.session.get(Task, dto.id)
+            if not task:
+                raise ValueError("Task not found")
+        else:
+            task = Task(title="", description="", priority=Priority.P3, status=TaskStatus.OPEN)
+            self.session.add(task)
+
+        task.title = dto.title.strip()
+        task.description = dto.description.strip() or "No description provided"
+        task.priority = dto.priority
+        task.status = dto.status
+        task.due_date = dto.due_date
+        task.estimated_cost = dto.estimated_cost
+        task.actual_cost = dto.actual_cost
+        task.estimated_effort_hours = dto.effort_hours
+        task.requires_follow_up = dto.follow_up_needed
+        task.room_id = dto.room_ids[0] if dto.room_ids else None
+        task.asset_id = dto.about_asset_ids[0] if dto.about_asset_ids else None
+        self.session.flush()
+
+        self._set_task_room_links(task.id, dto.room_ids)
+        self._set_task_asset_links(task.id, dto.about_asset_ids, dto.uses_asset_ids, dto.requires_assets)
+        return task
+
+    def suggest_primary_rooms_from_about_assets(self, about_asset_ids: list[str]) -> list[str]:
+        if not about_asset_ids:
+            return []
+        rows = self.session.execute(
+            select(AssetRoomLink.room_id)
+            .where(AssetRoomLink.asset_id.in_(about_asset_ids), AssetRoomLink.is_primary.is_(True))
+            .distinct()
+        )
+        return [row[0] for row in rows]
+
+    def list_task_titles_for_room(self, room_id: str) -> tuple[list[Task], list[Task]]:
+        direct = list(
+            self.session.scalars(
+                select(Task)
+                .join(TaskRoomLink, TaskRoomLink.task_id == Task.id)
+                .where(TaskRoomLink.room_id == room_id)
+                .order_by(Task.updated_at.desc())
+            )
+        )
+        derived = list(
+            self.session.scalars(
+                select(Task)
+                .join(TaskAssetLink, and_(TaskAssetLink.task_id == Task.id, TaskAssetLink.role == LinkRole.ABOUT))
+                .join(AssetRoomLink, and_(AssetRoomLink.asset_id == TaskAssetLink.asset_id, AssetRoomLink.room_id == room_id))
+                .order_by(Task.updated_at.desc())
+            )
+        )
+        return direct, derived
+
     def list_calendar_tasks(self, month: int, year: int) -> list[Task]:
         month_start = date(year, month, 1)
         month_end = date(year + (month // 12), (month % 12) + 1, 1)
@@ -462,6 +690,96 @@ class TaskService:
                 row.value_date = value
 
         self.session.flush()
+
+    def list_rooms_overview(self, *, search: str = "", room_type: str = "any") -> list[RoomListRow]:
+        asset_counts = select(AssetRoomLink.room_id, func.count(AssetRoomLink.asset_id).label("asset_count")).group_by(AssetRoomLink.room_id).subquery()
+        open_counts = (
+            select(TaskRoomLink.room_id, func.count(TaskRoomLink.task_id).label("open_count"))
+            .join(Task, Task.id == TaskRoomLink.task_id)
+            .where(Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]))
+            .group_by(TaskRoomLink.room_id)
+            .subquery()
+        )
+        overdue_counts = (
+            select(TaskRoomLink.room_id, func.count(TaskRoomLink.task_id).label("overdue_count"))
+            .join(Task, Task.id == TaskRoomLink.task_id)
+            .where(Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]), Task.due_date.is_not(None), Task.due_date < date.today())
+            .group_by(TaskRoomLink.room_id)
+            .subquery()
+        )
+
+        query = (
+            select(
+                Room.id,
+                Room.name,
+                func.coalesce(Room.description, "any").label("room_type"),
+                Room.floor_level,
+                func.coalesce(asset_counts.c.asset_count, 0),
+                func.coalesce(open_counts.c.open_count, 0),
+                func.coalesce(overdue_counts.c.overdue_count, 0),
+            )
+            .outerjoin(asset_counts, asset_counts.c.room_id == Room.id)
+            .outerjoin(open_counts, open_counts.c.room_id == Room.id)
+            .outerjoin(overdue_counts, overdue_counts.c.room_id == Room.id)
+            .order_by(Room.name.asc())
+        )
+        if room_type != "any":
+            query = query.where(Room.description == room_type)
+        if search.strip():
+            query = query.where(Room.name.ilike(f"%{search.strip()}%"))
+
+        rows = self.session.execute(query).all()
+        return [RoomListRow(id=r[0], name=r[1], room_type=r[2], floor_level=r[3], asset_count=int(r[4]), open_tasks_count=int(r[5]), overdue_tasks_count=int(r[6])) for r in rows]
+
+    def list_assets_for_room(
+        self,
+        room_id: str,
+        *,
+        category: str = "any",
+        warranty_soon: bool = False,
+        portable_only: bool = False,
+    ) -> list[AssetListRow]:
+        query = (
+            select(Asset, AssetRoomLink.is_primary)
+            .join(AssetRoomLink, AssetRoomLink.asset_id == Asset.id)
+            .where(AssetRoomLink.room_id == room_id)
+            .order_by(Asset.name.asc())
+        )
+        if category != "any":
+            query = query.where(Asset.category == category)
+        if warranty_soon:
+            query = query.where(Asset.warranty_expiry.is_not(None), Asset.warranty_expiry <= date.today() + timedelta(days=45))
+
+        rows = self.session.execute(query).all()
+        out: list[AssetListRow] = []
+        for asset, is_primary in rows:
+            is_fixed = "portable" not in (asset.notes or "").lower()
+            if portable_only and is_fixed:
+                continue
+            out.append(
+                AssetListRow(
+                    id=asset.id,
+                    name=asset.name,
+                    category=asset.category,
+                    is_fixed=is_fixed,
+                    warranty_expiry=asset.warranty_expiry,
+                    value=None,
+                    is_primary_in_room=bool(is_primary),
+                )
+            )
+        return out
+
+    def list_task_links_for_asset(self, asset_id: str) -> dict[LinkRole, list[Task]]:
+        links: dict[LinkRole, list[Task]] = {LinkRole.ABOUT: [], LinkRole.USES: [], LinkRole.REQUIRES: []}
+        rows = self.session.execute(
+            select(TaskAssetLink.role, Task)
+            .join(Task, Task.id == TaskAssetLink.task_id)
+            .where(TaskAssetLink.asset_id == asset_id)
+            .order_by(Task.updated_at.desc())
+        ).all()
+        for role, task in rows:
+            links[role].append(task)
+        return links
 
     def _create_next_recurring_instance(self, completed_task: Task) -> None:
         next_due = compute_next_due_date(completed_task.recurring_schedule, date.today())
