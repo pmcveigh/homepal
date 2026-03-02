@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -114,6 +115,10 @@ class Task(Base):
     estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     actual_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     notes: Mapped[str | None] = mapped_column(Text)
+    is_urgent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    requires_follow_up: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    estimated_effort_hours: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    labels: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
