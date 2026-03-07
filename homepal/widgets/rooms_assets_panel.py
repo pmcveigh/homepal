@@ -28,6 +28,14 @@ from homepal.services.task_service import AssetListRow, RoomListRow, TaskService
 from homepal.widgets.metadata_form import MetadataFormWidget
 
 
+ROOM_TYPES = ["any", "kitchen", "bathroom", "bedroom", "hall", "outdoor"]
+
+
+def _normalize_room_type(raw_value: str | None) -> str:
+    value = (raw_value or "").strip().lower()
+    return value if value in ROOM_TYPES else "any"
+
+
 class SimpleTableModel(QAbstractTableModel):
     def __init__(self, headers: list[str]):
         super().__init__()
@@ -53,7 +61,7 @@ class AddRoomDialog(QDialog):
         self.setWindowTitle("Add Room")
         layout = QFormLayout(self)
         self.name = QLineEdit()
-        self.room_type = QComboBox(); self.room_type.addItems(["any", "kitchen", "bathroom", "bedroom", "hall", "outdoor"])
+        self.room_type = QComboBox(); self.room_type.addItems(ROOM_TYPES)
         self.floor = QLineEdit()
         self.notes = QTextEdit()
         layout.addRow("Name", self.name)
@@ -99,7 +107,7 @@ class RoomsTab(QWidget):
         toolbar = QHBoxLayout()
         self.add_room_btn = QPushButton("Add Room")
         self.room_search = QLineEdit(); self.room_search.setPlaceholderText("Search rooms")
-        self.room_type = QComboBox(); self.room_type.addItems(["any", "kitchen", "bathroom", "bedroom", "hall", "outdoor"])
+        self.room_type = QComboBox(); self.room_type.addItems(ROOM_TYPES)
         toolbar.addWidget(self.add_room_btn)
         toolbar.addWidget(self.room_search)
         toolbar.addWidget(self.room_type)
@@ -128,7 +136,7 @@ class RoomsTab(QWidget):
 
     def _build_room_tabs(self):
         basics = QWidget(); form = QFormLayout(basics)
-        self.room_name = QLineEdit(); self.room_type_edit = QComboBox(); self.room_type_edit.addItems(["any", "kitchen", "bathroom", "bedroom", "hall", "outdoor"])
+        self.room_name = QLineEdit(); self.room_type_edit = QComboBox(); self.room_type_edit.addItems(ROOM_TYPES)
         self.room_floor = QLineEdit(); self.room_notes = QTextEdit(); self.room_save_btn = QPushButton("Save room")
         for lbl, w in [("Name", self.room_name), ("Type", self.room_type_edit), ("Floor", self.room_floor), ("Notes", self.room_notes), ("", self.room_save_btn)]: form.addRow(lbl, w)
         self.room_tab.addTab(basics, "Basics")
@@ -167,8 +175,9 @@ class RoomsTab(QWidget):
         self.current_room_id = room.id
         full = next((r for r in self.task_service.list_rooms() if r.id == room.id), None)
         if full:
-            self.room_name.setText(full.name); self.room_type_edit.setCurrentText(full.description or "any"); self.room_floor.setText(full.floor_level or ""); self.room_notes.setText(full.notes or "")
-            self.room_metadata.rebuild(room_type=full.description or "any", owner_id=room.id)
+            room_type = _normalize_room_type(full.description)
+            self.room_name.setText(full.name); self.room_type_edit.setCurrentText(room_type); self.room_floor.setText(full.floor_level or ""); self.room_notes.setText(full.notes or "")
+            self.room_metadata.rebuild(room_type=room_type, owner_id=room.id)
         direct, derived = self.task_service.list_task_titles_for_room(room.id)
         self.room_direct_tasks.clear(); self.room_direct_tasks.addItems([t.title for t in direct])
         self.room_derived_tasks.clear(); self.room_derived_tasks.addItems([t.title for t in derived])
