@@ -154,7 +154,7 @@ class Task(Base):
     asset_id: Mapped[str | None] = mapped_column(ForeignKey("assets.id"))
     recurring_schedule_id: Mapped[str | None] = mapped_column(ForeignKey("recurring_schedules.id"))
     parent_task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"))
-    due_date: Mapped[date | None] = mapped_column(Date)
+    due_date: Mapped[datetime | None] = mapped_column(DateTime, default=datetime.now)
     estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     actual_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     notes: Mapped[str | None] = mapped_column(Text)

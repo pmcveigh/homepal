@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from getpass import getuser
 
@@ -13,6 +13,7 @@ from homepal.models import (
     Asset,
     AssetCategory,
     AssetRoomLink,
+    Attachment,
     AttributeDefinition,
     AttributeValue,
     LinkRole,
@@ -67,7 +68,7 @@ class TaskListRow:
     description: str
     priority: Priority
     status: TaskStatus
-    due_date: date | None
+    due_date: datetime | None
     room_count: int
     about_asset_count: int
     is_urgent: bool
@@ -82,7 +83,7 @@ class TaskEditorDTO:
     description: str = ""
     priority: Priority = Priority.P3
     status: TaskStatus = TaskStatus.OPEN
-    due_date: date | None = None
+    due_date: datetime | None = None
     estimated_cost: Decimal | None = None
     actual_cost: Decimal | None = None
     effort_hours: Decimal | None = None
@@ -184,7 +185,8 @@ class TaskService:
         if category:
             return category
 
-        category = AssetCategory(code=normalized, display_name=(display_name or code).strip(), is_active=True)
+        pretty_name = (display_name or code).strip().replace("_", " ").title()
+        category = AssetCategory(code=normalized, display_name=pretty_name, is_active=True)
         self.session.add(category)
         self.session.flush()
         return category
@@ -249,13 +251,63 @@ class TaskService:
     def list_assets(self) -> list[Asset]:
         return list(self.session.scalars(select(Asset).order_by(Asset.name.asc())))
 
+    def list_asset_room_ids(self, asset_id: str) -> list[str]:
+        return list(
+            self.session.scalars(
+                select(AssetRoomLink.room_id)
+                .where(AssetRoomLink.asset_id == asset_id)
+                .order_by(AssetRoomLink.is_primary.desc(), AssetRoomLink.room_id.asc())
+            )
+        )
+
+    def delete_asset(self, asset_id: str) -> None:
+        asset = self.session.get(Asset, asset_id)
+        if not asset:
+            raise ValueError("Asset not found")
+
+        self.session.query(TaskAssetLink).where(TaskAssetLink.asset_id == asset_id).delete(synchronize_session=False)
+        self.session.query(Task).where(Task.asset_id == asset_id).update({Task.asset_id: None}, synchronize_session=False)
+        self.session.query(Attachment).where(Attachment.asset_id == asset_id).delete(synchronize_session=False)
+        self.session.query(AttributeValue).where(AttributeValue.asset_id == asset_id).delete(synchronize_session=False)
+        self.session.query(AssetRoomLink).where(AssetRoomLink.asset_id == asset_id).delete(synchronize_session=False)
+        self.session.delete(asset)
+        self.session.flush()
+
+    def delete_room(self, room_id: str) -> None:
+        room = self.session.get(Room, room_id)
+        if not room:
+            raise ValueError("Room not found")
+
+        linked_assets = self.session.scalar(select(func.count()).select_from(AssetRoomLink).where(AssetRoomLink.room_id == room_id))
+        linked_tasks = self.session.scalar(select(func.count()).select_from(TaskRoomLink).where(TaskRoomLink.room_id == room_id))
+        if linked_assets:
+            raise ValueError("Cannot delete room with linked assets. Reassign or delete those assets first.")
+        if linked_tasks:
+            raise ValueError("Cannot delete room with linked tasks. Reassign or delete those tasks first.")
+
+        self.session.query(AttributeValue).where(AttributeValue.room_id == room_id).delete(synchronize_session=False)
+        self.session.delete(room)
+        self.session.flush()
+
+    def delete_task(self, task_id: str) -> None:
+        task = self.session.get(Task, task_id)
+        if not task:
+            raise ValueError("Task not found")
+
+        self.session.query(TaskRoomLink).where(TaskRoomLink.task_id == task_id).delete(synchronize_session=False)
+        self.session.query(TaskAssetLink).where(TaskAssetLink.task_id == task_id).delete(synchronize_session=False)
+        self.session.query(TaskHistory).where(TaskHistory.task_id == task_id).delete(synchronize_session=False)
+        self.session.query(Attachment).where(Attachment.task_id == task_id).delete(synchronize_session=False)
+        self.session.delete(task)
+        self.session.flush()
+
     def create_task(
         self,
         *,
         title: str,
         description: str,
         priority: Priority = Priority.P3,
-        due_date: date | None = None,
+        due_date: datetime | None = None,
         is_urgent: bool = False,
         requires_follow_up: bool = False,
         estimated_effort_hours: Decimal | None = None,
@@ -372,12 +424,15 @@ class TaskService:
             query = query.where(select(TaskAssetLink.task_id).where(TaskAssetLink.asset_id == filters.asset_id).exists())
 
         today = date.today()
+        day_start = datetime.combine(today, time.min)
+        week_end = datetime.combine(today + timedelta(days=7), time.max)
+        month_end = datetime.combine(today + timedelta(days=30), time.max)
         if filters.due_range == "overdue":
-            query = query.where(Task.due_date.is_not(None), Task.due_date < today)
+            query = query.where(Task.due_date.is_not(None), Task.due_date < day_start)
         elif filters.due_range == "next7":
-            query = query.where(Task.due_date.is_not(None), Task.due_date >= today, Task.due_date <= today + timedelta(days=7))
+            query = query.where(Task.due_date.is_not(None), Task.due_date >= day_start, Task.due_date <= week_end)
         elif filters.due_range == "next30":
-            query = query.where(Task.due_date.is_not(None), Task.due_date >= today, Task.due_date <= today + timedelta(days=30))
+            query = query.where(Task.due_date.is_not(None), Task.due_date >= day_start, Task.due_date <= month_end)
 
         if filters.search.strip():
             q = f"%{filters.search.strip()}%"
@@ -492,8 +547,8 @@ class TaskService:
         return direct, derived
 
     def list_calendar_tasks(self, month: int, year: int) -> list[Task]:
-        month_start = date(year, month, 1)
-        month_end = date(year + (month // 12), (month % 12) + 1, 1)
+        month_start = datetime(year, month, 1)
+        month_end = datetime(year + (month // 12), (month % 12) + 1, 1)
         return list(
             self.session.scalars(
                 select(Task)
@@ -504,7 +559,8 @@ class TaskService:
 
     def get_dashboard_stats(self, today: date | None = None) -> DashboardStats:
         today = today or date.today()
-        week_end = today + timedelta(days=7)
+        day_start = datetime.combine(today, time.min)
+        week_end = datetime.combine(today + timedelta(days=7), time.max)
 
         open_tasks = self.session.scalar(
             select(func.count(Task.id)).where(Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]))
@@ -512,7 +568,7 @@ class TaskService:
         overdue_tasks = self.session.scalar(
             select(func.count(Task.id)).where(
                 Task.due_date.is_not(None),
-                Task.due_date < today,
+                Task.due_date < day_start,
                 Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
             )
         ) or 0
@@ -522,7 +578,7 @@ class TaskService:
         due_this_week = self.session.scalar(
             select(func.count(Task.id)).where(
                 Task.due_date.is_not(None),
-                Task.due_date >= today,
+                Task.due_date >= day_start,
                 Task.due_date <= week_end,
                 Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
             )
@@ -541,6 +597,7 @@ class TaskService:
 
     def generate_report_summary(self, today: date | None = None) -> ReportSummary:
         today = today or date.today()
+        day_start = datetime.combine(today, time.min)
         total_tasks = self.session.scalar(select(func.count(Task.id))) or 0
         completed_tasks = self.session.scalar(select(func.count(Task.id)).where(Task.status == TaskStatus.COMPLETED)) or 0
         open_tasks = self.session.scalar(
@@ -549,7 +606,7 @@ class TaskService:
         overdue_tasks = self.session.scalar(
             select(func.count(Task.id)).where(
                 Task.due_date.is_not(None),
-                Task.due_date < today,
+                Task.due_date < day_start,
                 Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
             )
         ) or 0
@@ -703,7 +760,11 @@ class TaskService:
         overdue_counts = (
             select(TaskRoomLink.room_id, func.count(TaskRoomLink.task_id).label("overdue_count"))
             .join(Task, Task.id == TaskRoomLink.task_id)
-            .where(Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]), Task.due_date.is_not(None), Task.due_date < date.today())
+            .where(
+                Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]),
+                Task.due_date.is_not(None),
+                Task.due_date < datetime.combine(date.today(), time.min),
+            )
             .group_by(TaskRoomLink.room_id)
             .subquery()
         )
@@ -782,7 +843,7 @@ class TaskService:
         return links
 
     def _create_next_recurring_instance(self, completed_task: Task) -> None:
-        next_due = compute_next_due_date(completed_task.recurring_schedule, date.today())
+        next_due = datetime.combine(compute_next_due_date(completed_task.recurring_schedule, date.today()), time.min)
         cloned = Task(
             title=completed_task.title,
             description=completed_task.description,

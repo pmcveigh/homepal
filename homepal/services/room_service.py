@@ -36,3 +36,6 @@ class RoomService:
             return room
 
         return self.task_service.create_room(name=dto.name, description=dto.room_type, floor_level=dto.floor_level)
+    def delete_room(self, room_id: str) -> None:
+        self.task_service.delete_room(room_id)
+

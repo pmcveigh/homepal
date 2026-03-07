@@ -1,3 +1,4 @@
+import pytest
 from decimal import Decimal
 
 from sqlalchemy import create_engine
@@ -62,3 +63,26 @@ def test_task_room_and_asset_role_links():
         requires = next(link for link in asset_links if link.role == LinkRole.REQUIRES)
         assert requires.asset_id == paint.id
         assert requires.unit == "L"
+
+
+def test_delete_asset_and_room_workflow():
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        svc = TaskService(session)
+        kitchen = svc.create_room(name="Kitchen")
+        office = svc.create_room(name="Office")
+        asset = svc.create_asset(primary_room_id=kitchen.id, also_used_in_room_ids=[office.id], name="Router", category_code="it_router")
+        session.commit()
+
+        with pytest.raises(ValueError):
+            svc.delete_room(kitchen.id)
+
+        svc.delete_asset(asset.id)
+        session.commit()
+
+        svc.delete_room(office.id)
+        svc.delete_room(kitchen.id)
+        session.commit()
+
+        assert svc.list_rooms() == []

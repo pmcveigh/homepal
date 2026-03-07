@@ -157,7 +157,7 @@ def upgrade() -> None:
         searchable=False,
     )
     add_asset_global(9, "manual_url", "Manual URL", "text", searchable=False, filterable=False)
-    add_asset_global(10, "energy_rating", "Energy rating", "choice", choices="A,G", searchable=False)
+    add_asset_global(10, "energy_rating", "Energy rating", "choice", choices="A,B,C,D,E,F", searchable=False)
 
     add_asset_cat(1, "heating_boiler", "fuel_type", "Fuel type", "choice", choices="gas,oil,electric,other", required=True)
     add_asset_cat(2, "heating_boiler", "boiler_type", "Boiler type", "choice", choices="combi,system,regular,other", required=True)

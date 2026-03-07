@@ -97,11 +97,41 @@ def upgrade() -> None:
             {"id": "00000000-0000-0000-0000-000000000068", "code": "furniture_sofa", "display_name": "Sofa", "is_active": True},
             {"id": "00000000-0000-0000-0000-000000000069", "code": "furniture_bed", "display_name": "Bed", "is_active": True},
             {"id": "00000000-0000-0000-0000-000000000070", "code": "furniture_wardrobe", "display_name": "Wardrobe", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000071", "code": "furniture_dining_table", "display_name": "Dining table", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000072", "code": "furniture_office_chair", "display_name": "Office chair", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000073", "code": "furniture_bookshelf", "display_name": "Bookshelf", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000074", "code": "electrical_ev_charger", "display_name": "EV charger", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000075", "code": "electrical_solar_inverter", "display_name": "Solar inverter", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000076", "code": "electrical_battery_storage", "display_name": "Battery storage", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000077", "code": "heating_heat_pump", "display_name": "Heat pump", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000078", "code": "heating_underfloor_heating", "display_name": "Underfloor heating", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000079", "code": "ventilation_mvhr", "display_name": "MVHR unit", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000080", "code": "water_softener", "display_name": "Water softener", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000081", "code": "plumbing_sump_pump", "display_name": "Sump pump", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000082", "code": "security_smart_lock", "display_name": "Smart lock", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000083", "code": "security_video_doorbell", "display_name": "Video doorbell", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000084", "code": "garden_irrigation_system", "display_name": "Irrigation system", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000085", "code": "garden_greenhouse", "display_name": "Greenhouse", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000086", "code": "garden_compost_bin", "display_name": "Compost bin", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000087", "code": "outdoor_fence", "display_name": "Fence", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000088", "code": "outdoor_gate", "display_name": "Gate", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000089", "code": "outdoor_decking", "display_name": "Decking", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000090", "code": "outdoor_patio", "display_name": "Patio", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000091", "code": "pool_pump", "display_name": "Pool pump", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000092", "code": "pool_filter", "display_name": "Pool filter", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000093", "code": "appliance_air_conditioner", "display_name": "Air conditioner", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000094", "code": "appliance_vacuum_cleaner", "display_name": "Vacuum cleaner", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000095", "code": "appliance_robot_vacuum", "display_name": "Robot vacuum", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000096", "code": "appliance_iron", "display_name": "Iron", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000097", "code": "it_printer", "display_name": "Printer", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000098", "code": "it_ups", "display_name": "UPS", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000099", "code": "fire_sprinkler_system", "display_name": "Sprinkler system", "is_active": True},
+            {"id": "00000000-0000-0000-0000-000000000100", "code": "storage_safe", "display_name": "Safe", "is_active": True},
         ],
     )
 
 
 def downgrade() -> None:
     op.execute(
-        "DELETE FROM asset_categories WHERE id BETWEEN '00000000-0000-0000-0000-000000000001' AND '00000000-0000-0000-0000-000000000070'"
+        "DELETE FROM asset_categories WHERE id BETWEEN '00000000-0000-0000-0000-000000000001' AND '00000000-0000-0000-0000-000000000100'"
     )

@@ -28,6 +28,12 @@ class AssetService:
             portable_only=portable_only,
         )
 
+    def list_asset_room_ids(self, asset_id: str) -> list[str]:
+        return self.task_service.list_asset_room_ids(asset_id)
+
+    def delete_asset(self, asset_id: str) -> None:
+        self.task_service.delete_asset(asset_id)
+
     def save_asset(self, dto: AssetSaveDTO) -> Asset:
         session = self.task_service.session
         if dto.id:

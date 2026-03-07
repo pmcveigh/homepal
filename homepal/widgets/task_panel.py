@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDateEdit,
+    QDateTimeEdit,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -59,7 +59,7 @@ class TaskTableModel(QAbstractTableModel):
             row.title,
             row.priority.value,
             row.status.value,
-            row.due_date.isoformat() if row.due_date else "-",
+            row.due_date.strftime("%Y-%m-%d %H:%M") if row.due_date else "-",
             str(row.room_count),
             str(row.about_asset_count),
             ", ".join([x for x in ["Urgent" if row.is_urgent else "", "Follow-up" if row.requires_follow_up else ""] if x]) or "-",
@@ -107,8 +107,8 @@ class TaskPanel(QWidget):
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        top = QHBoxLayout(); self.new_btn = QPushButton("New task"); self.save_btn = QPushButton("Save"); self.discard_btn = QPushButton("Discard")
-        top.addWidget(self.new_btn); top.addWidget(self.save_btn); top.addWidget(self.discard_btn); top.addStretch(1)
+        top = QHBoxLayout(); self.new_btn = QPushButton("New task"); self.save_btn = QPushButton("Save"); self.discard_btn = QPushButton("Discard"); self.delete_btn = QPushButton("Delete")
+        top.addWidget(self.new_btn); top.addWidget(self.save_btn); top.addWidget(self.discard_btn); top.addWidget(self.delete_btn); top.addStretch(1)
         right_layout.addLayout(top)
 
         self.tabs = QTabWidget()
@@ -136,6 +136,7 @@ class TaskPanel(QWidget):
         self.new_btn.clicked.connect(self._start_new)
         self.save_btn.clicked.connect(self._save)
         self.discard_btn.clicked.connect(self._discard)
+        self.delete_btn.clicked.connect(self._delete_task)
 
         self._reload_pickers()
         self._start_new()
@@ -144,7 +145,8 @@ class TaskPanel(QWidget):
     def _build_summary_tab(self):
         tab = QWidget(); form = QFormLayout(tab)
         self.title_input = QLineEdit(); self.desc_input = QTextEdit(); self.priority_input = QComboBox(); self.status_input = QComboBox()
-        self.due_input = QDateEdit(); self.due_input.setCalendarPopup(True); self.due_input.setSpecialValueText("No due date")
+        self.due_input = QDateTimeEdit(); self.due_input.setCalendarPopup(True); self.due_input.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.due_input.setDateTime(datetime.now())
         self.est_cost_input = QLineEdit(); self.actual_cost_input = QLineEdit(); self.effort_input = QLineEdit(); self.follow_input = QCheckBox("Follow-up needed")
         for p in Priority: self.priority_input.addItem(p.value, p)
         for s in TaskStatus: self.status_input.addItem(s.value, s)
@@ -248,7 +250,7 @@ class TaskPanel(QWidget):
             description=self.desc_input.toPlainText(),
             priority=self.priority_input.currentData(),
             status=self.status_input.currentData(),
-            due_date=self.due_input.date().toPython() if self.due_input.date().isValid() else None,
+            due_date=self.due_input.dateTime().toPython() if self.due_input.dateTime().isValid() else None,
             estimated_cost=decimal_or_none(self.est_cost_input.text()),
             actual_cost=decimal_or_none(self.actual_cost_input.text()) if self.actual_cost_input.isEnabled() else None,
             effort_hours=decimal_or_none(self.effort_input.text()),
@@ -265,7 +267,9 @@ class TaskPanel(QWidget):
         self.priority_input.setCurrentIndex(max(0, self.priority_input.findData(dto.priority)))
         self.status_input.setCurrentIndex(max(0, self.status_input.findData(dto.status)))
         if dto.due_date:
-            self.due_input.setDate(dto.due_date)
+            self.due_input.setDateTime(dto.due_date)
+        else:
+            self.due_input.setDateTime(datetime.now())
         self.est_cost_input.setText(str(dto.estimated_cost or "")); self.actual_cost_input.setText(str(dto.actual_cost or "")); self.effort_input.setText(str(dto.effort_hours or ""))
         self.follow_input.setChecked(dto.follow_up_needed)
         for lst in [self.rooms_selected, self.about_selected, self.uses_selected, self.requires_selected]:
@@ -291,6 +295,23 @@ class TaskPanel(QWidget):
             self._apply(self.task_service.get_task_editor_dto(self._current_task_id))
         else:
             self._apply(TaskEditorDTO())
+
+
+    def _delete_task(self):
+        if not self._current_task_id:
+            return
+        answer = QMessageBox.question(self, "Delete task", "Delete current task?")
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.task_service.delete_task(self._current_task_id)
+            self.task_service.session.commit()
+            self._current_task_id = None
+            self._apply(TaskEditorDTO())
+            self.refresh(); self.data_changed.emit()
+        except Exception as exc:
+            self.task_service.session.rollback()
+            QMessageBox.warning(self, "Delete failed", str(exc))
 
     def _save(self):
         try:
