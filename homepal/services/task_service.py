@@ -19,6 +19,7 @@ from homepal.models import (
     LinkRole,
     Priority,
     Property,
+    ServiceProvider,
     Room,
     Task,
     TaskAssetLink,
@@ -116,6 +117,17 @@ class AssetListRow:
     warranty_expiry: date | None
     value: Decimal | None
     is_primary_in_room: bool
+
+
+@dataclass(slots=True)
+class ProviderListRow:
+    id: str
+    name: str
+    service_type: str
+    account_number: str | None
+    phone_number: str | None
+    monthly_cost_estimate: Decimal | None
+    contract_end_date: date | None
 
 class TaskService:
     def __init__(self, session: Session):
@@ -250,6 +262,107 @@ class TaskService:
 
     def list_assets(self) -> list[Asset]:
         return list(self.session.scalars(select(Asset).order_by(Asset.name.asc())))
+
+    def list_providers(self, *, service_type: str = "all", search: str = "") -> list[ProviderListRow]:
+        stmt = select(ServiceProvider)
+        normalized_type = service_type.strip().lower()
+        if normalized_type and normalized_type != "all":
+            stmt = stmt.where(func.lower(ServiceProvider.service_type) == normalized_type)
+
+        term = search.strip().lower()
+        if term:
+            like = f"%{term}%"
+            stmt = stmt.where(
+                or_(
+                    func.lower(ServiceProvider.name).like(like),
+                    func.lower(func.coalesce(ServiceProvider.account_number, "")).like(like),
+                    func.lower(func.coalesce(ServiceProvider.phone_number, "")).like(like),
+                )
+            )
+
+        providers = self.session.scalars(stmt.order_by(ServiceProvider.name.asc())).all()
+        return [
+            ProviderListRow(
+                id=provider.id,
+                name=provider.name,
+                service_type=provider.service_type,
+                account_number=provider.account_number,
+                phone_number=provider.phone_number,
+                monthly_cost_estimate=provider.monthly_cost_estimate,
+                contract_end_date=provider.contract_end_date,
+            )
+            for provider in providers
+        ]
+
+    def create_provider(
+        self,
+        *,
+        name: str,
+        service_type: str,
+        account_number: str = "",
+        phone_number: str = "",
+        website: str = "",
+        monthly_cost_estimate: Decimal | None = None,
+        contract_end_date: date | None = None,
+        notes: str = "",
+    ) -> ServiceProvider:
+        if not name.strip():
+            raise ValueError("Provider name is required")
+        if not service_type.strip():
+            raise ValueError("Service type is required")
+
+        provider = ServiceProvider(
+            name=name.strip(),
+            service_type=service_type.strip(),
+            account_number=account_number.strip() or None,
+            phone_number=phone_number.strip() or None,
+            website=website.strip() or None,
+            monthly_cost_estimate=monthly_cost_estimate,
+            contract_end_date=contract_end_date,
+            notes=notes.strip() or None,
+        )
+        self.session.add(provider)
+        self.session.flush()
+        return provider
+
+    def update_provider(
+        self,
+        provider_id: str,
+        *,
+        name: str,
+        service_type: str,
+        account_number: str = "",
+        phone_number: str = "",
+        website: str = "",
+        monthly_cost_estimate: Decimal | None = None,
+        contract_end_date: date | None = None,
+        notes: str = "",
+    ) -> ServiceProvider:
+        provider = self.session.get(ServiceProvider, provider_id)
+        if provider is None:
+            raise ValueError("Provider not found")
+        if not name.strip():
+            raise ValueError("Provider name is required")
+        if not service_type.strip():
+            raise ValueError("Service type is required")
+
+        provider.name = name.strip()
+        provider.service_type = service_type.strip()
+        provider.account_number = account_number.strip() or None
+        provider.phone_number = phone_number.strip() or None
+        provider.website = website.strip() or None
+        provider.monthly_cost_estimate = monthly_cost_estimate
+        provider.contract_end_date = contract_end_date
+        provider.notes = notes.strip() or None
+        self.session.flush()
+        return provider
+
+    def delete_provider(self, provider_id: str) -> None:
+        provider = self.session.get(ServiceProvider, provider_id)
+        if provider is None:
+            raise ValueError("Provider not found")
+        self.session.delete(provider)
+        self.session.flush()
 
     def list_asset_room_ids(self, asset_id: str) -> list[str]:
         return list(

@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QMainWindow, QSplitter, QStackedWidget, QStatusBar
 from homepal.services.task_service import TaskService
 from homepal.widgets.calendar_panel import CalendarPanel
 from homepal.widgets.dashboard_panel import DashboardPanel
+from homepal.widgets.providers_panel import ProvidersPanel
 from homepal.widgets.reports_panel import ReportsPanel
 from homepal.widgets.rooms_assets_panel import RoomsAssetsPanel
 from homepal.widgets.task_panel import TaskPanel
@@ -21,7 +22,7 @@ class MainWindow(QMainWindow):
 
         self.nav = QTreeWidget()
         self.nav.setHeaderHidden(True)
-        for section in ["Dashboard", "Tasks", "Rooms & Assets", "Reports", "Calendar", "Settings"]:
+        for section in ["Dashboard", "Tasks", "Rooms & Assets", "Providers", "Reports", "Calendar", "Settings"]:
             QTreeWidgetItem(self.nav, [section])
 
         self.stack = QStackedWidget()
@@ -34,6 +35,9 @@ class MainWindow(QMainWindow):
 
         self.rooms_assets_panel = RoomsAssetsPanel(self.task_service, self.refresh_views)
         self.stack.addWidget(self.rooms_assets_panel)
+
+        self.providers_panel = ProvidersPanel(self.task_service, self.refresh_views)
+        self.stack.addWidget(self.providers_panel)
 
         self.reports_panel = ReportsPanel(self.task_service)
         self.stack.addWidget(self.reports_panel)
@@ -72,6 +76,7 @@ class MainWindow(QMainWindow):
         self.task_panel.refresh_topology()
         self.task_panel.refresh()
         self.rooms_assets_panel.refresh()
+        self.providers_panel.refresh()
         self.calendar_panel.refresh()
         self.update_status_bar()
 

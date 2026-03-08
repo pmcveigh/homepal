@@ -75,6 +75,25 @@ class Property(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 
 
+
+
+class ServiceProvider(Base):
+    __tablename__ = "service_providers"
+    __table_args__ = (
+        Index("ix_service_providers_service_type", "service_type"),
+        Index("ix_service_providers_name", "name"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    service_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    account_number: Mapped[str | None] = mapped_column(String(80))
+    phone_number: Mapped[str | None] = mapped_column(String(80))
+    website: Mapped[str | None] = mapped_column(String(255))
+    monthly_cost_estimate: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    contract_end_date: Mapped[date | None] = mapped_column(Date)
+    notes: Mapped[str | None] = mapped_column(Text)
+
 class Room(Base):
     __tablename__ = "rooms"
     __table_args__ = (Index("ux_rooms_name", "name", unique=True),)
