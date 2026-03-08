@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QInputDialog,
     QPushButton,
     QSplitter,
     QTabWidget,
@@ -24,12 +25,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from homepal.models import LinkRole, Priority, TaskStatus
+from homepal.models import Asset, Priority, TaskStatus
 from homepal.services.task_service import TaskEditorDTO, TaskListFilters, TaskListRow, TaskService
 
 
 class TaskTableModel(QAbstractTableModel):
-    HEADERS = ["Title", "Priority", "Status", "Due", "Rooms", "About assets", "Flags", "Updated"]
+    HEADERS = ["Title", "Priority", "Status", "Due", "Rooms", "Assets", "Flags", "Updated"]
 
     def __init__(self):
         super().__init__()
@@ -61,7 +62,7 @@ class TaskTableModel(QAbstractTableModel):
             row.status.value,
             row.due_date.strftime("%Y-%m-%d %H:%M") if row.due_date else "-",
             str(row.room_count),
-            str(row.about_asset_count),
+            str(row.asset_count),
             ", ".join([x for x in ["Urgent" if row.is_urgent else "", "Follow-up" if row.requires_follow_up else ""] if x]) or "-",
             row.updated_at.strftime("%Y-%m-%d %H:%M"),
         ]
@@ -160,7 +161,7 @@ class TaskPanel(QWidget):
         self.rooms_selected = QListWidget(); layout.addWidget(QLabel("Rooms")); layout.addWidget(self.rooms_selected)
         row = QHBoxLayout(); self.room_picker = QComboBox(); self.add_room_btn = QPushButton("Add room"); self.quick_room_btn = QPushButton("Create Room")
         row.addWidget(self.room_picker); row.addWidget(self.add_room_btn); row.addWidget(self.quick_room_btn); layout.addLayout(row)
-        self.add_primary_btn = QPushButton("Add primary rooms from ABOUT assets")
+        self.add_primary_btn = QPushButton("Add primary rooms from selected assets")
         layout.addWidget(self.add_primary_btn)
         self.tabs.addTab(tab, "Rooms")
         self.add_room_btn.clicked.connect(lambda: self._add_to_list(self.room_picker, self.rooms_selected))
@@ -169,26 +170,21 @@ class TaskPanel(QWidget):
 
     def _build_assets_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab)
-        self.about_selected = QListWidget(); self.uses_selected = QListWidget(); self.requires_selected = QListWidget()
-        for label, picker_name, button_name, list_widget, quick_fn in [
-            ("ABOUT assets", "about_picker", "add_about_btn", self.about_selected, self._quick_add_asset),
-            ("USES assets", "uses_picker", "add_uses_btn", self.uses_selected, self._quick_add_asset),
-        ]:
-            layout.addWidget(QLabel(label)); layout.addWidget(list_widget)
-            row = QHBoxLayout(); picker = QComboBox(); setattr(self, picker_name, picker); add_btn = QPushButton("Add"); setattr(self, button_name, add_btn)
-            create_btn = QPushButton("Create asset")
-            row.addWidget(picker); row.addWidget(add_btn); row.addWidget(create_btn); layout.addLayout(row)
-            add_btn.clicked.connect(lambda _=False, p=picker, l=list_widget: self._add_to_list(p, l))
-            create_btn.clicked.connect(quick_fn)
-        layout.addWidget(QLabel("REQUIRES assets (quantity unit)")); layout.addWidget(self.requires_selected)
-        self.require_picker = QComboBox(); self.require_qty = QLineEdit(); self.require_unit = QLineEdit(); self.add_require_btn = QPushButton("Add required material")
-        req = QHBoxLayout(); req.addWidget(self.require_picker); req.addWidget(self.require_qty); req.addWidget(self.require_unit); req.addWidget(self.add_require_btn)
+        self.required_assets = QListWidget(); layout.addWidget(QLabel("Required assets")); layout.addWidget(self.required_assets)
+        self.required_picker = QComboBox(); self.required_purpose = QLineEdit(); self.required_purpose.setPlaceholderText("Purpose / reason (optional)")
+        self.add_required_btn = QPushButton("Add")
+        self.remove_required_btn = QPushButton("Remove selected")
+        self.edit_required_btn = QPushButton("Edit selected asset")
+        self.create_required_btn = QPushButton("Create asset")
+        req = QHBoxLayout()
+        for widget in [self.required_picker, self.required_purpose, self.add_required_btn, self.remove_required_btn, self.edit_required_btn, self.create_required_btn]:
+            req.addWidget(widget)
         layout.addLayout(req)
-        self.quick_material_btn = QPushButton("Create Required Material")
-        layout.addWidget(self.quick_material_btn)
         self.tabs.addTab(tab, "Assets")
-        self.add_require_btn.clicked.connect(self._add_requires)
-        self.quick_material_btn.clicked.connect(self._quick_add_asset)
+        self.add_required_btn.clicked.connect(self._add_required_asset)
+        self.remove_required_btn.clicked.connect(self._remove_selected_required_asset)
+        self.edit_required_btn.clicked.connect(self._edit_selected_required_asset)
+        self.create_required_btn.clicked.connect(self._quick_add_asset)
 
     def _build_stub_tab(self, title: str, text: str):
         tab = QWidget(); lay = QVBoxLayout(tab); lbl = QLabel(text); lbl.setEnabled(False); lay.addWidget(lbl)
@@ -203,21 +199,18 @@ class TaskPanel(QWidget):
         assets = self.task_service.list_assets()
         self.room_filter.clear(); self.room_filter.addItem("Any room", None)
         self.asset_filter.clear(); self.asset_filter.addItem("Any asset", None)
-        self.room_picker.clear(); self.about_picker.clear(); self.uses_picker.clear(); self.require_picker.clear()
+        self.room_picker.clear(); self.required_picker.clear()
         for room in rooms:
             self.room_filter.addItem(room.name, room.id); self.room_picker.addItem(room.name, room.id)
         for asset in assets:
             self.asset_filter.addItem(asset.name, asset.id)
-            for picker in [self.about_picker, self.uses_picker, self.require_picker]:
-                picker.addItem(asset.name, asset.id)
+            self.required_picker.addItem(asset.name, asset.id)
 
     def refresh_topology(self) -> None:
         selected_room_filter = self.room_filter.currentData()
         selected_asset_filter = self.asset_filter.currentData()
         selected_room_picker = self.room_picker.currentData()
-        selected_about_picker = self.about_picker.currentData()
-        selected_uses_picker = self.uses_picker.currentData()
-        selected_require_picker = self.require_picker.currentData()
+        selected_required_picker = self.required_picker.currentData()
 
         self._reload_pickers()
 
@@ -225,15 +218,14 @@ class TaskPanel(QWidget):
             (self.room_filter, selected_room_filter),
             (self.asset_filter, selected_asset_filter),
             (self.room_picker, selected_room_picker),
-            (self.about_picker, selected_about_picker),
-            (self.uses_picker, selected_uses_picker),
-            (self.require_picker, selected_require_picker),
+            (self.required_picker, selected_required_picker),
         ]:
             if selected_id is None:
                 continue
             idx = picker.findData(selected_id)
             if idx >= 0:
                 picker.setCurrentIndex(idx)
+        self._refresh_required_asset_names()
 
     def _add_to_list(self, combo: QComboBox, target: QListWidget):
         text = combo.currentText(); key = combo.currentData()
@@ -244,15 +236,80 @@ class TaskPanel(QWidget):
                 return
         it = QListWidgetItem(text); it.setData(Qt.UserRole, key); target.addItem(it); self._dirty = True
 
-    def _add_requires(self):
-        asset_id = self.require_picker.currentData();
+    def _add_required_asset(self):
+        asset_id = self.required_picker.currentData()
         if not asset_id:
             return
-        label = f"{self.require_picker.currentText()} | {self.require_qty.text().strip() or '-'} {self.require_unit.text().strip()}".strip()
-        it = QListWidgetItem(label)
-        it.setData(Qt.UserRole, (asset_id, self.require_qty.text().strip(), self.require_unit.text().strip() or None))
-        self.requires_selected.addItem(it)
+        purpose = self.required_purpose.text().strip() or None
+        for i in range(self.required_assets.count()):
+            if self.required_assets.item(i).data(Qt.UserRole)[0] == asset_id:
+                self.required_assets.item(i).setData(Qt.UserRole, (asset_id, purpose))
+                self.required_assets.item(i).setText(self._required_asset_label(self.required_picker.currentText(), purpose))
+                self._dirty = True
+                return
+        item = QListWidgetItem(self._required_asset_label(self.required_picker.currentText(), purpose))
+        item.setData(Qt.UserRole, (asset_id, purpose))
+        self.required_assets.addItem(item)
         self._dirty = True
+
+    def _remove_selected_required_asset(self):
+        row = self.required_assets.currentRow()
+        if row < 0:
+            return
+        self.required_assets.takeItem(row)
+        self._dirty = True
+
+    def _edit_selected_required_asset(self):
+        item = self.required_assets.currentItem()
+        if item is None:
+            return
+        asset_id, purpose = item.data(Qt.UserRole)
+        current_index = self.required_picker.findData(asset_id)
+        if current_index >= 0:
+            self.required_picker.setCurrentIndex(current_index)
+        current_name = self.required_picker.currentText()
+        new_name, ok = QInputDialog.getText(self, "Edit asset", "Asset name", text=current_name)
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            QMessageBox.warning(self, "Invalid name", "Asset name cannot be empty.")
+            return
+        try:
+            asset = self.task_service.session.get(Asset, asset_id)
+            if asset is None:
+                raise ValueError("Asset not found")
+            asset.name = new_name
+            self.task_service.session.commit()
+            self._reload_pickers()
+            self._refresh_required_asset_names()
+            self.data_changed.emit()
+        except Exception as exc:
+            self.task_service.session.rollback()
+            QMessageBox.warning(self, "Save failed", str(exc))
+            return
+
+        purpose_text, ok = QInputDialog.getText(
+            self,
+            "Edit purpose",
+            "Purpose / reason (optional)",
+            text=purpose or "",
+        )
+        if ok:
+            purpose = purpose_text.strip() or None
+            item.setData(Qt.UserRole, (asset_id, purpose))
+            item.setText(self._required_asset_label(new_name, purpose))
+            self._dirty = True
+
+    def _required_asset_label(self, asset_name: str, purpose: str | None) -> str:
+        return f"{asset_name} — {purpose}" if purpose else asset_name
+
+    def _refresh_required_asset_names(self):
+        asset_names = {a.id: a.name for a in self.task_service.list_assets()}
+        for i in range(self.required_assets.count()):
+            item = self.required_assets.item(i)
+            asset_id, purpose = item.data(Qt.UserRole)
+            item.setText(self._required_asset_label(asset_names.get(asset_id, asset_id), purpose))
 
     def _collect(self) -> TaskEditorDTO:
         def decimal_or_none(txt: str):
@@ -264,9 +321,9 @@ class TaskPanel(QWidget):
                 raise ValueError(f"Invalid decimal: {txt}")
 
         requires = []
-        for i in range(self.requires_selected.count()):
-            asset_id, qty, unit = self.requires_selected.item(i).data(Qt.UserRole)
-            requires.append((asset_id, Decimal(qty) if qty else None, unit))
+        for i in range(self.required_assets.count()):
+            asset_id, purpose = self.required_assets.item(i).data(Qt.UserRole)
+            requires.append((asset_id, None, purpose))
 
         return TaskEditorDTO(
             id=self._current_task_id,
@@ -280,8 +337,8 @@ class TaskPanel(QWidget):
             effort_hours=decimal_or_none(self.effort_input.text()),
             follow_up_needed=self.follow_input.isChecked(),
             room_ids=[self.rooms_selected.item(i).data(Qt.UserRole) for i in range(self.rooms_selected.count())],
-            about_asset_ids=[self.about_selected.item(i).data(Qt.UserRole) for i in range(self.about_selected.count())],
-            uses_asset_ids=[self.uses_selected.item(i).data(Qt.UserRole) for i in range(self.uses_selected.count())],
+            about_asset_ids=[],
+            uses_asset_ids=[],
             requires_assets=requires,
         )
 
@@ -296,17 +353,19 @@ class TaskPanel(QWidget):
             self.due_input.setDateTime(datetime.now())
         self.est_cost_input.setText(str(dto.estimated_cost or "")); self.actual_cost_input.setText(str(dto.actual_cost or "")); self.effort_input.setText(str(dto.effort_hours or ""))
         self.follow_input.setChecked(dto.follow_up_needed)
-        for lst in [self.rooms_selected, self.about_selected, self.uses_selected, self.requires_selected]:
+        for lst in [self.rooms_selected, self.required_assets]:
             lst.clear()
         room_names = {r.id: r.name for r in self.task_service.list_rooms()}; asset_names = {a.id: a.name for a in self.task_service.list_assets()}
         for rid in dto.room_ids:
             it = QListWidgetItem(room_names.get(rid, rid)); it.setData(Qt.UserRole, rid); self.rooms_selected.addItem(it)
-        for aid in dto.about_asset_ids:
-            it = QListWidgetItem(asset_names.get(aid, aid)); it.setData(Qt.UserRole, aid); self.about_selected.addItem(it)
-        for aid in dto.uses_asset_ids:
-            it = QListWidgetItem(asset_names.get(aid, aid)); it.setData(Qt.UserRole, aid); self.uses_selected.addItem(it)
+        for aid in dto.about_asset_ids + dto.uses_asset_ids:
+            item = QListWidgetItem(asset_names.get(aid, aid))
+            item.setData(Qt.UserRole, (aid, None))
+            self.required_assets.addItem(item)
         for aid, qty, unit in dto.requires_assets:
-            it = QListWidgetItem(f"{asset_names.get(aid, aid)} | {qty or '-'} {unit or ''}"); it.setData(Qt.UserRole, (aid, str(qty) if qty is not None else "", unit)); self.requires_selected.addItem(it)
+            item = QListWidgetItem(self._required_asset_label(asset_names.get(aid, aid), unit))
+            item.setData(Qt.UserRole, (aid, unit))
+            self.required_assets.addItem(item)
         self._toggle_actual_cost(); self._dirty = False
 
     def _start_new(self):
@@ -342,8 +401,8 @@ class TaskPanel(QWidget):
             dto = self._collect()
             if not dto.title.strip():
                 raise ValueError("Title is required")
-            if not dto.room_ids and not dto.about_asset_ids:
-                raise ValueError("Select at least one room or ABOUT asset")
+            if not dto.room_ids and not dto.requires_assets:
+                raise ValueError("Select at least one room or required asset")
             task = self.task_service.save_task_editor_dto(dto)
             self.task_service.session.commit()
             self._current_task_id = task.id
@@ -371,7 +430,7 @@ class TaskPanel(QWidget):
         return answer == QMessageBox.Yes
 
     def _suggest_primary_rooms(self):
-        about_ids = [self.about_selected.item(i).data(Qt.UserRole) for i in range(self.about_selected.count())]
+        about_ids = [self.required_assets.item(i).data(Qt.UserRole)[0] for i in range(self.required_assets.count())]
         room_ids = self.task_service.suggest_primary_rooms_from_about_assets(about_ids)
         by_id = {r.id: r.name for r in self.task_service.list_rooms()}
         for rid in room_ids:
@@ -389,10 +448,10 @@ class TaskPanel(QWidget):
             QMessageBox.warning(self, "No rooms", "Create a room first.")
             return
         room_id = self.room_picker.currentData()
-        asset = self.task_service.create_asset(primary_room_id=room_id, name=f"Asset {self.about_picker.count()+1}", category="General")
+        asset = self.task_service.create_asset(primary_room_id=room_id, name=f"Asset {self.required_picker.count()+1}", category="General")
         self.task_service.session.flush(); self._reload_pickers()
-        for picker in [self.about_picker, self.uses_picker, self.require_picker]:
-            picker.setCurrentIndex(picker.findData(asset.id))
+        self.required_picker.setCurrentIndex(self.required_picker.findData(asset.id))
+        self._add_required_asset()
 
     def refresh(self) -> None:
         filters = TaskListFilters(

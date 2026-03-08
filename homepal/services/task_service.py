@@ -70,7 +70,7 @@ class TaskListRow:
     status: TaskStatus
     due_date: datetime | None
     room_count: int
-    about_asset_count: int
+    asset_count: int
     is_urgent: bool
     requires_follow_up: bool
     updated_at: datetime
@@ -323,8 +323,9 @@ class TaskService:
         normalized_uses = list(dict.fromkeys(uses_asset_ids or []))
         normalized_requires = requires_assets or []
 
-        if not normalized_room_ids and not normalized_about:
-            raise ValueError("Task must have at least one room or one ABOUT asset")
+        linked_asset_ids = normalized_about + normalized_uses + [item[0] for item in normalized_requires]
+        if not normalized_room_ids and not linked_asset_ids:
+            raise ValueError("Task must have at least one room or one required asset")
 
         task = Task(
             title=title.strip(),
@@ -332,7 +333,7 @@ class TaskService:
             priority=priority,
             status=TaskStatus.OPEN,
             room_id=normalized_room_ids[0] if normalized_room_ids else None,
-            asset_id=normalized_about[0] if normalized_about else None,
+            asset_id=linked_asset_ids[0] if linked_asset_ids else None,
             due_date=due_date,
             is_urgent=is_urgent,
             requires_follow_up=requires_follow_up,
@@ -388,10 +389,9 @@ class TaskService:
             .group_by(TaskRoomLink.task_id)
             .subquery()
         )
-        about_count_subq = (
-            select(TaskAssetLink.task_id, func.count(TaskAssetLink.asset_id).label("about_count"))
-            .where(TaskAssetLink.role == LinkRole.ABOUT)
-            .group_by(TaskAssetLink.task_id)
+        asset_count_subq = (
+            select(TaskAssetLink.task_id, func.count(TaskAssetLink.asset_id).label("asset_count"))
+                        .group_by(TaskAssetLink.task_id)
             .subquery()
         )
 
@@ -404,13 +404,13 @@ class TaskService:
                 Task.status,
                 Task.due_date,
                 func.coalesce(room_count_subq.c.room_count, 0),
-                func.coalesce(about_count_subq.c.about_count, 0),
+                func.coalesce(asset_count_subq.c.asset_count, 0),
                 Task.is_urgent,
                 Task.requires_follow_up,
                 Task.updated_at,
             )
             .outerjoin(room_count_subq, room_count_subq.c.task_id == Task.id)
-            .outerjoin(about_count_subq, about_count_subq.c.task_id == Task.id)
+            .outerjoin(asset_count_subq, asset_count_subq.c.task_id == Task.id)
             .order_by(Task.updated_at.desc())
         )
 
@@ -448,7 +448,7 @@ class TaskService:
                 status=row[4],
                 due_date=row[5],
                 room_count=int(row[6]),
-                about_asset_count=int(row[7]),
+                asset_count=int(row[7]),
                 is_urgent=bool(row[8]),
                 requires_follow_up=bool(row[9]),
                 updated_at=row[10],
@@ -489,8 +489,9 @@ class TaskService:
         )
 
     def save_task_editor_dto(self, dto: TaskEditorDTO) -> Task:
-        if not dto.room_ids and not dto.about_asset_ids:
-            raise ValueError("Task must have at least one room or ABOUT asset")
+        linked_asset_ids = dto.about_asset_ids + dto.uses_asset_ids + [item[0] for item in dto.requires_assets]
+        if not dto.room_ids and not linked_asset_ids:
+            raise ValueError("Task must have at least one room or required asset")
 
         if dto.id:
             task = self.session.get(Task, dto.id)
@@ -510,7 +511,7 @@ class TaskService:
         task.estimated_effort_hours = dto.effort_hours
         task.requires_follow_up = dto.follow_up_needed
         task.room_id = dto.room_ids[0] if dto.room_ids else None
-        task.asset_id = dto.about_asset_ids[0] if dto.about_asset_ids else None
+        task.asset_id = linked_asset_ids[0] if linked_asset_ids else None
         self.session.flush()
 
         self._set_task_room_links(task.id, dto.room_ids)

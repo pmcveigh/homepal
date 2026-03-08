@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from homepal.db import Base
 from homepal.models import Priority, RecurrenceType, RecurringSchedule, Task, TaskStatus
-from homepal.services.task_service import TaskService
+from homepal.services.task_service import TaskEditorDTO, TaskService
 
 
 @pytest.fixture()
@@ -124,3 +124,22 @@ def test_delete_task_removes_row(session):
     session.commit()
 
     assert session.get(Task, task.id) is None
+
+
+def test_save_task_editor_with_required_asset_only(session):
+    svc = TaskService(session)
+    room = svc.create_room(name="Garage")
+    asset = svc.create_asset(primary_room_id=room.id, name="Filter", category_code="hvac_filter")
+
+    dto = TaskEditorDTO(
+        title="Replace filter",
+        description="",
+        room_ids=[],
+        requires_assets=[(asset.id, None, "seasonal replacement")],
+    )
+    created = svc.save_task_editor_dto(dto)
+    session.commit()
+
+    stored = session.get(Task, created.id)
+    assert stored is not None
+    assert stored.asset_id == asset.id
