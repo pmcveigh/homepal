@@ -211,6 +211,30 @@ class TaskPanel(QWidget):
             for picker in [self.about_picker, self.uses_picker, self.require_picker]:
                 picker.addItem(asset.name, asset.id)
 
+    def refresh_topology(self) -> None:
+        selected_room_filter = self.room_filter.currentData()
+        selected_asset_filter = self.asset_filter.currentData()
+        selected_room_picker = self.room_picker.currentData()
+        selected_about_picker = self.about_picker.currentData()
+        selected_uses_picker = self.uses_picker.currentData()
+        selected_require_picker = self.require_picker.currentData()
+
+        self._reload_pickers()
+
+        for picker, selected_id in [
+            (self.room_filter, selected_room_filter),
+            (self.asset_filter, selected_asset_filter),
+            (self.room_picker, selected_room_picker),
+            (self.about_picker, selected_about_picker),
+            (self.uses_picker, selected_uses_picker),
+            (self.require_picker, selected_require_picker),
+        ]:
+            if selected_id is None:
+                continue
+            idx = picker.findData(selected_id)
+            if idx >= 0:
+                picker.setCurrentIndex(idx)
+
     def _add_to_list(self, combo: QComboBox, target: QListWidget):
         text = combo.currentText(); key = combo.currentData()
         if not key:

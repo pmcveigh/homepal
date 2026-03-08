@@ -69,6 +69,7 @@ class MainWindow(QMainWindow):
 
     def refresh_views(self) -> None:
         self.dashboard_panel.refresh()
+        self.task_panel.refresh_topology()
         self.task_panel.refresh()
         self.rooms_assets_panel.refresh()
         self.calendar_panel.refresh()
