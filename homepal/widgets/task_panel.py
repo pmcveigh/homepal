@@ -159,12 +159,13 @@ class TaskPanel(QWidget):
     def _build_rooms_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab)
         self.rooms_selected = QListWidget(); layout.addWidget(QLabel("Rooms")); layout.addWidget(self.rooms_selected)
-        row = QHBoxLayout(); self.room_picker = QComboBox(); self.add_room_btn = QPushButton("Add room"); self.quick_room_btn = QPushButton("Create Room")
-        row.addWidget(self.room_picker); row.addWidget(self.add_room_btn); row.addWidget(self.quick_room_btn); layout.addLayout(row)
+        row = QHBoxLayout(); self.room_picker = QComboBox(); self.add_room_btn = QPushButton("Add room"); self.remove_room_btn = QPushButton("Remove selected room"); self.quick_room_btn = QPushButton("Create Room")
+        row.addWidget(self.room_picker); row.addWidget(self.add_room_btn); row.addWidget(self.remove_room_btn); row.addWidget(self.quick_room_btn); layout.addLayout(row)
         self.add_primary_btn = QPushButton("Add primary rooms from selected assets")
         layout.addWidget(self.add_primary_btn)
         self.tabs.addTab(tab, "Rooms")
         self.add_room_btn.clicked.connect(lambda: self._add_to_list(self.room_picker, self.rooms_selected))
+        self.remove_room_btn.clicked.connect(self._remove_selected_room)
         self.quick_room_btn.clicked.connect(self._quick_add_room)
         self.add_primary_btn.clicked.connect(self._suggest_primary_rooms)
 
@@ -257,6 +258,13 @@ class TaskPanel(QWidget):
         if row < 0:
             return
         self.required_assets.takeItem(row)
+        self._dirty = True
+
+    def _remove_selected_room(self):
+        row = self.rooms_selected.currentRow()
+        if row < 0:
+            return
+        self.rooms_selected.takeItem(row)
         self._dirty = True
 
     def _edit_selected_required_asset(self):
