@@ -28,7 +28,7 @@ from homepal.services.task_service import AssetListRow, RoomListRow, TaskService
 from homepal.widgets.metadata_form import MetadataFormWidget
 
 
-ROOM_TYPES = ["any", "kitchen", "bathroom", "bedroom", "hall", "outdoor"]
+ROOM_TYPES = ["any", "kitchen", "bathroom", "bedroom", "living_room", "dining_room", "office", "utility", "laundry", "garage", "hall", "outdoor"]
 
 
 def _normalize_room_type(raw_value: str | None) -> str:
@@ -106,9 +106,12 @@ class RoomsTab(QWidget):
         root = QVBoxLayout(self)
         toolbar = QHBoxLayout()
         self.add_room_btn = QPushButton("Add Room")
+        self.delete_room_btn = QPushButton("Delete Room")
+        self.delete_room_btn.setEnabled(False)
         self.room_search = QLineEdit(); self.room_search.setPlaceholderText("Search rooms")
         self.room_type = QComboBox(); self.room_type.addItems(ROOM_TYPES)
         toolbar.addWidget(self.add_room_btn)
+        toolbar.addWidget(self.delete_room_btn)
         toolbar.addWidget(self.room_search)
         toolbar.addWidget(self.room_type)
         root.addLayout(toolbar)
@@ -128,6 +131,7 @@ class RoomsTab(QWidget):
         splitter.addWidget(top); splitter.addWidget(bottom); splitter.setSizes([360, 380])
 
         self.add_room_btn.clicked.connect(self._add_room)
+        self.delete_room_btn.clicked.connect(self._delete_room)
         self.room_search.textChanged.connect(self.refresh)
         self.room_type.currentIndexChanged.connect(self.refresh)
         self.rooms_table.selectionModel().selectionChanged.connect(self._room_selected)
@@ -157,6 +161,9 @@ class RoomsTab(QWidget):
         self._room_rows: list[RoomListRow] = rows
         self.rooms_model.set_rows([(r.name, r.room_type, r.floor_level or "-", r.asset_count, r.open_tasks_count, r.overdue_tasks_count) for r in rows])
         self.rooms_table.resizeColumnsToContents()
+        if self.current_room_id and not any(room.id == self.current_room_id for room in rows):
+            self.current_room_id = None
+            self.delete_room_btn.setEnabled(False)
 
     def _select_room(self, room_id: str | None) -> None:
         if not room_id:
@@ -173,6 +180,7 @@ class RoomsTab(QWidget):
             return
         room = self._room_rows[selected[0].row()]
         self.current_room_id = room.id
+        self.delete_room_btn.setEnabled(True)
         full = next((r for r in self.task_service.list_rooms() if r.id == room.id), None)
         if full:
             room_type = _normalize_room_type(full.description)
@@ -215,6 +223,30 @@ class RoomsTab(QWidget):
         except Exception as exc:
             self.task_service.session.rollback(); QMessageBox.warning(self, "Save failed", str(exc))
 
+    def _delete_room(self):
+        if not self.current_room_id:
+            QMessageBox.information(self, "Delete room", "Select a room to delete")
+            return
+        selected = self.rooms_table.selectionModel().selectedRows()
+        room_name = self._room_rows[selected[0].row()].name if selected else "this room"
+        answer = QMessageBox.question(
+            self,
+            "Delete room",
+            f"Delete room '{room_name}'? This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.room_service.delete_room(self.current_room_id)
+            self.task_service.session.commit()
+            self.current_room_id = None
+            self.delete_room_btn.setEnabled(False)
+            self.refresh(); self.on_data_changed()
+        except Exception as exc:
+            self.task_service.session.rollback(); QMessageBox.warning(self, "Delete failed", str(exc))
+
 
 class AssetsTab(QWidget):
     def __init__(self, task_service: TaskService, on_data_changed):
@@ -227,12 +259,14 @@ class AssetsTab(QWidget):
         root = QVBoxLayout(self)
         toolbar = QHBoxLayout()
         self.add_asset_btn = QPushButton("Add Asset")
+        self.delete_asset_btn = QPushButton("Delete Asset")
+        self.delete_asset_btn.setEnabled(False)
         self.asset_search = QLineEdit(); self.asset_search.setPlaceholderText("Search assets")
         self.asset_category = QComboBox(); self.asset_category.addItem("any")
         self.room_filter = QComboBox(); self.room_filter.addItem("all rooms", None)
         self.warranty_soon = QCheckBox("Warranty soon")
         self.portable_only = QCheckBox("Portable only")
-        for w in [self.add_asset_btn, self.asset_search, self.asset_category, self.room_filter, self.warranty_soon, self.portable_only]:
+        for w in [self.add_asset_btn, self.delete_asset_btn, self.asset_search, self.asset_category, self.room_filter, self.warranty_soon, self.portable_only]:
             toolbar.addWidget(w)
         root.addLayout(toolbar)
 
@@ -251,6 +285,7 @@ class AssetsTab(QWidget):
         splitter.addWidget(top); splitter.addWidget(bottom); splitter.setSizes([360, 380])
 
         self.add_asset_btn.clicked.connect(self._add_asset)
+        self.delete_asset_btn.clicked.connect(self._delete_asset)
         self.asset_search.textChanged.connect(self.refresh)
         self.asset_category.currentIndexChanged.connect(self.refresh)
         self.room_filter.currentIndexChanged.connect(self.refresh)
@@ -330,6 +365,9 @@ class AssetsTab(QWidget):
         self.assets_model.set_rows([(a.name, a.category, "Yes" if a.is_fixed else "No", a.warranty_expiry or "-", a.value or "-", "★" if a.is_primary_in_room else "") for a in filtered])
         self.assets_table.resizeColumnsToContents()
         self._room_name_by_id = room_name_by_id
+        if self.current_asset_id and not any(asset.id == self.current_asset_id for asset in filtered):
+            self.current_asset_id = None
+            self.delete_asset_btn.setEnabled(False)
 
     def _select_asset(self, asset_id: str | None) -> None:
         if not asset_id:
@@ -346,6 +384,7 @@ class AssetsTab(QWidget):
             return
         asset = self._asset_rows[selected[0].row()]
         self.current_asset_id = asset.id
+        self.delete_asset_btn.setEnabled(True)
         full = next((a for a in self.task_service.list_assets() if a.id == asset.id), None)
         if full:
             self.asset_name.setText(full.name); self.asset_category_edit.setCurrentText(full.category); self.asset_fixed.setChecked("portable" not in (full.notes or "").lower()); self.asset_notes.setText(full.notes or "")
@@ -402,6 +441,30 @@ class AssetsTab(QWidget):
             self.refresh(); self._select_asset(asset.id); self.on_data_changed()
         except Exception as exc:
             self.task_service.session.rollback(); QMessageBox.warning(self, "Save failed", str(exc))
+
+    def _delete_asset(self):
+        if not self.current_asset_id:
+            QMessageBox.information(self, "Delete asset", "Select an asset to delete")
+            return
+        selected = self.assets_table.selectionModel().selectedRows()
+        asset_name = self._asset_rows[selected[0].row()].name if selected else "this asset"
+        answer = QMessageBox.question(
+            self,
+            "Delete asset",
+            f"Delete asset '{asset_name}'? This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.asset_service.delete_asset(self.current_asset_id)
+            self.task_service.session.commit()
+            self.current_asset_id = None
+            self.delete_asset_btn.setEnabled(False)
+            self.refresh(); self.on_data_changed()
+        except Exception as exc:
+            self.task_service.session.rollback(); QMessageBox.warning(self, "Delete failed", str(exc))
 
 
 class RoomsAssetsPage(QWidget):

@@ -44,3 +44,7 @@ python main.py
 ```bash
 pytest
 ```
+## Wiki
+
+- [Architecture & Python project setup](docs/wiki/how-homepal-works.md)
+
