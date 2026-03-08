@@ -6,9 +6,13 @@ from PySide6.QtWidgets import QMainWindow, QSplitter, QStackedWidget, QStatusBar
 from homepal.services.task_service import TaskService
 from homepal.widgets.calendar_panel import CalendarPanel
 from homepal.widgets.dashboard_panel import DashboardPanel
+from homepal.widgets.budget_finance_panel import BudgetFinancePanel
+from homepal.widgets.household_members_panel import HouseholdMembersPanel
+from homepal.widgets.meal_planning_panel import MealPlanningPanel
 from homepal.widgets.providers_panel import ProvidersPanel
 from homepal.widgets.reports_panel import ReportsPanel
 from homepal.widgets.rooms_assets_panel import RoomsAssetsPanel
+from homepal.widgets.shopping_panel import ShoppingPanel
 from homepal.widgets.task_panel import TaskPanel
 
 
@@ -22,7 +26,19 @@ class MainWindow(QMainWindow):
 
         self.nav = QTreeWidget()
         self.nav.setHeaderHidden(True)
-        for section in ["Dashboard", "Tasks", "Rooms & Assets", "Providers", "Reports", "Calendar", "Settings"]:
+        for section in [
+            "Dashboard",
+            "Tasks",
+            "Rooms & Assets",
+            "Providers",
+            "Calendar",
+            "Budget & Finance",
+            "Household Members",
+            "Meal Planning",
+            "Shopping",
+            "Reports",
+            "Settings",
+        ]:
             QTreeWidgetItem(self.nav, [section])
 
         self.stack = QStackedWidget()
@@ -39,11 +55,23 @@ class MainWindow(QMainWindow):
         self.providers_panel = ProvidersPanel(self.task_service, self.refresh_views)
         self.stack.addWidget(self.providers_panel)
 
-        self.reports_panel = ReportsPanel(self.task_service)
-        self.stack.addWidget(self.reports_panel)
-
         self.calendar_panel = CalendarPanel(self.task_service)
         self.stack.addWidget(self.calendar_panel)
+
+        self.budget_finance_panel = BudgetFinancePanel()
+        self.stack.addWidget(self.budget_finance_panel)
+
+        self.household_members_panel = HouseholdMembersPanel()
+        self.stack.addWidget(self.household_members_panel)
+
+        self.meal_planning_panel = MealPlanningPanel()
+        self.stack.addWidget(self.meal_planning_panel)
+
+        self.shopping_panel = ShoppingPanel()
+        self.stack.addWidget(self.shopping_panel)
+
+        self.reports_panel = ReportsPanel(self.task_service)
+        self.stack.addWidget(self.reports_panel)
 
         self.stack.addWidget(self._settings_placeholder())
 
