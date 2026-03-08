@@ -49,6 +49,7 @@ class CalendarPanel(QWidget):
         self.tasks_list.clear()
         tasks = self.task_service.list_calendar_tasks(month=self.current.month, year=self.current.year)
         for task in tasks:
-            self.tasks_list.addItem(f"{task.due_date.isoformat()} - {task.title} ({task.status.value})")
+            status_label = task.status.value if hasattr(task.status, "value") else str(task.status)
+            self.tasks_list.addItem(f"{task.due_date.isoformat()} - {task.title} ({status_label})")
         if not tasks:
             self.tasks_list.addItem("No tasks scheduled for this month.")

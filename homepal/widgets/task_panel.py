@@ -56,10 +56,12 @@ class TaskTableModel(QAbstractTableModel):
         if not index.isValid() or role != Qt.DisplayRole:
             return None
         row = self.rows[index.row()]
+        priority_label = row.priority.value if hasattr(row.priority, "value") else str(row.priority)
+        status_label = row.status.value if hasattr(row.status, "value") else str(row.status)
         values = [
             row.title,
-            row.priority.value,
-            row.status.value,
+            priority_label,
+            status_label,
             row.due_date.strftime("%Y-%m-%d %H:%M") if row.due_date else "-",
             str(row.room_count),
             str(row.asset_count),
