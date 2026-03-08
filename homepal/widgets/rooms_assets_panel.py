@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -122,6 +123,8 @@ class RoomsTab(QWidget):
         top = QWidget(); top_l = QVBoxLayout(top)
         self.rooms_model = SimpleTableModel(["Name", "Type", "Floor", "Asset count", "Open tasks", "Overdue tasks"])
         self.rooms_table = QTableView(); self.rooms_table.setModel(self.rooms_model)
+        self.rooms_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.rooms_table.setSelectionMode(QAbstractItemView.SingleSelection)
         top_l.addWidget(self.rooms_table)
 
         bottom = QWidget(); bottom_l = QVBoxLayout(bottom)
@@ -276,6 +279,8 @@ class AssetsTab(QWidget):
         top = QWidget(); top_l = QVBoxLayout(top)
         self.assets_model = SimpleTableModel(["Name", "Category", "Fixed", "Warranty", "Value", "Primary"])
         self.assets_table = QTableView(); self.assets_table.setModel(self.assets_model)
+        self.assets_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.assets_table.setSelectionMode(QAbstractItemView.SingleSelection)
         top_l.addWidget(self.assets_table)
 
         bottom = QWidget(); bottom_l = QVBoxLayout(bottom)
