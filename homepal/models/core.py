@@ -60,6 +60,11 @@ class ValueType(str, enum.Enum):
 
 
 class RecurrenceType(str, enum.Enum):
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+    YEARLY = "yearly"
+    CUSTOM_INTERVAL = "custom_interval"
     EVERY_N_DAYS = "every_n_days"
     EVERY_N_MONTHS = "every_n_months"
     FIXED_ANNUAL_DATE = "fixed_annual_date"
@@ -187,6 +192,74 @@ class Task(Base):
     recurring_schedule: Mapped[RecurringSchedule | None] = relationship()
 
 
+class HouseholdMember(Base):
+    __tablename__ = "household_members"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(255))
+
+
+class TaskAssignment(Base):
+    __tablename__ = "task_assignments"
+
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), primary_key=True)
+    member_id: Mapped[str] = mapped_column(ForeignKey("household_members.id"), primary_key=True)
+
+
+class TaskProviderLink(Base):
+    __tablename__ = "task_provider_links"
+
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), primary_key=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("service_providers.id"), primary_key=True)
+
+
+class TaskMaterial(Base):
+    __tablename__ = "task_materials"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    unit: Mapped[str | None] = mapped_column(String(40))
+
+
+class ShoppingListItem(Base):
+    __tablename__ = "shopping_list_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), nullable=False)
+    material_id: Mapped[str | None] = mapped_column(ForeignKey("task_materials.id"))
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_purchased: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class BudgetEntry(Base):
+    __tablename__ = "budget_entries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), unique=True, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    category: Mapped[str] = mapped_column(String(120), default="Task", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+
+class TaskChecklistItem(Base):
+    __tablename__ = "task_checklist_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class TaskDependency(Base):
+    __tablename__ = "task_dependencies"
+
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), primary_key=True)
+    depends_on_task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), primary_key=True)
+
+
 class Attachment(Base):
     __tablename__ = "attachments"
 
@@ -282,6 +355,18 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
 
 
 def compute_next_due_date(schedule: RecurringSchedule, completed_on: date) -> date:
+    if schedule.recurrence_type == RecurrenceType.DAILY:
+        return completed_on + timedelta(days=1)
+    if schedule.recurrence_type == RecurrenceType.WEEKLY:
+        return completed_on + timedelta(days=7)
+    if schedule.recurrence_type == RecurrenceType.MONTHLY:
+        year = completed_on.year + (completed_on.month // 12)
+        month = (completed_on.month % 12) + 1
+        return date(year, month, min(completed_on.day, 28))
+    if schedule.recurrence_type == RecurrenceType.YEARLY:
+        return date(completed_on.year + 1, completed_on.month, min(completed_on.day, 28))
+    if schedule.recurrence_type == RecurrenceType.CUSTOM_INTERVAL:
+        return completed_on + timedelta(days=schedule.interval_value or 1)
     if schedule.recurrence_type == RecurrenceType.EVERY_N_DAYS:
         return completed_on + timedelta(days=schedule.interval_value or 0)
     if schedule.recurrence_type == RecurrenceType.AFTER_COMPLETION_N_DAYS:

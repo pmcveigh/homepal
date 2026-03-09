@@ -1,54 +1,60 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from sqlalchemy import select
 from PySide6.QtWidgets import (
     QCheckBox,
-    QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+from homepal.models import ShoppingListItem
+from homepal.services.task_service import TaskService
+
 
 class ShoppingPanel(QWidget):
-    def __init__(self):
+    def __init__(self, task_service: TaskService):
         super().__init__()
+        self.task_service = task_service
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Shopping"))
-
-        input_row = QHBoxLayout()
-        self.item_input = QLineEdit()
-        self.item_input.setPlaceholderText("Add shopping item")
-        add_btn = QPushButton("Add item")
-        add_btn.clicked.connect(self.add_item)
-
-        input_row.addWidget(self.item_input)
-        input_row.addWidget(add_btn)
+        layout.addWidget(QLabel("Generated from task required materials."))
 
         self.items_layout = QVBoxLayout()
-        self.items_layout.setAlignment(Qt.AlignTop)
+        layout.addLayout(self.items_layout)
 
         clear_btn = QPushButton("Clear completed")
         clear_btn.clicked.connect(self.clear_completed)
-
-        layout.addLayout(input_row)
-        layout.addLayout(self.items_layout)
         layout.addWidget(clear_btn)
         layout.addStretch()
 
-    def add_item(self) -> None:
-        text = self.item_input.text().strip()
-        if not text:
+        self.refresh()
+
+    def refresh(self) -> None:
+        for i in reversed(range(self.items_layout.count())):
+            widget = self.items_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+
+        items = list(self.task_service.session.scalars(select(ShoppingListItem).order_by(ShoppingListItem.id.asc())))
+        for entry in items:
+            checkbox = QCheckBox(entry.label)
+            checkbox.setChecked(entry.is_purchased)
+            checkbox.stateChanged.connect(lambda state, item_id=entry.id: self._toggle(item_id, state != 0))
+            self.items_layout.addWidget(checkbox)
+
+    def _toggle(self, item_id: str, purchased: bool) -> None:
+        item = self.task_service.session.get(ShoppingListItem, item_id)
+        if item is None:
             return
-        checkbox = QCheckBox(text)
-        self.items_layout.addWidget(checkbox)
-        self.item_input.clear()
+        item.is_purchased = purchased
+        self.task_service.session.commit()
 
     def clear_completed(self) -> None:
-        for index in reversed(range(self.items_layout.count())):
-            widget = self.items_layout.itemAt(index).widget()
-            if isinstance(widget, QCheckBox) and widget.isChecked():
-                widget.setParent(None)
+        completed = list(self.task_service.session.scalars(select(ShoppingListItem).where(ShoppingListItem.is_purchased.is_(True))))
+        for item in completed:
+            self.task_service.session.delete(item)
+        self.task_service.session.commit()
+        self.refresh()

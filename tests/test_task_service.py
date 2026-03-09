@@ -6,7 +6,19 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from homepal.db import Base
-from homepal.models import Priority, RecurrenceType, RecurringSchedule, Task, TaskStatus
+from homepal.models import (
+    BudgetEntry,
+    Priority,
+    RecurrenceType,
+    RecurringSchedule,
+    ShoppingListItem,
+    Task,
+    TaskAssignment,
+    TaskChecklistItem,
+    TaskDependency,
+    TaskProviderLink,
+    TaskStatus,
+)
 from homepal.services.task_service import TaskEditorDTO, TaskService
 
 
@@ -143,3 +155,84 @@ def test_save_task_editor_with_required_asset_only(session):
     stored = session.get(Task, created.id)
     assert stored is not None
     assert stored.asset_id == asset.id
+
+
+def test_create_task_supports_assignments_providers_materials_checklists_dependencies_and_budget(session):
+    svc = TaskService(session)
+    room = svc.create_room(name="Kitchen")
+    member = svc.create_household_member(name="Alex")
+    provider = svc.create_provider(name="Plumber Co", service_type="Plumbing")
+    prerequisite = svc.create_task(title="Turn off water", description="", room_ids=[room.id])
+
+    task = svc.create_task(
+        title="Replace faucet",
+        description="",
+        room_ids=[room.id],
+        assigned_member_ids=[member.id],
+        provider_ids=[provider.id],
+        required_materials=[("PTFE Tape", Decimal("1"), "roll")],
+        checklist_items=["Shutoff verified", "Leak test"],
+        dependency_task_ids=[prerequisite.id],
+        estimated_cost=Decimal("45.50"),
+    )
+    session.commit()
+
+    assert session.query(TaskAssignment).where(TaskAssignment.task_id == task.id).count() == 1
+    assert session.query(TaskProviderLink).where(TaskProviderLink.task_id == task.id).count() == 1
+    assert session.query(TaskChecklistItem).where(TaskChecklistItem.task_id == task.id).count() == 2
+    assert session.query(TaskDependency).where(TaskDependency.task_id == task.id).count() == 1
+    shopping = session.query(ShoppingListItem).where(ShoppingListItem.task_id == task.id).one()
+    assert shopping.is_purchased is False
+    budget = session.query(BudgetEntry).where(BudgetEntry.task_id == task.id).one()
+    assert budget.amount == Decimal("45.50")
+
+
+def test_dependency_blocks_task_start_until_complete(session):
+    svc = TaskService(session)
+    room = svc.create_room(name="Garage")
+    task_a = svc.create_task(title="Prep", description="", room_ids=[room.id])
+    task_b = svc.create_task(title="Do work", description="", room_ids=[room.id], dependency_task_ids=[task_a.id])
+
+    with pytest.raises(ValueError, match="dependencies"):
+        svc.transition_status(task_b, TaskStatus.IN_PROGRESS)
+
+    svc.transition_status(task_a, TaskStatus.IN_PROGRESS)
+    svc.transition_status(task_a, TaskStatus.COMPLETED)
+    svc.transition_status(task_b, TaskStatus.IN_PROGRESS)
+    session.commit()
+
+    assert task_b.status == TaskStatus.IN_PROGRESS
+
+
+def test_material_purchase_toggle_and_attachment(session):
+    svc = TaskService(session)
+    task = svc.create_task(title="Read manual", description="")
+    material = svc.add_task_material(task_id=task.id, name="Manual sleeve", add_to_shopping=True)
+    item = session.query(ShoppingListItem).where(ShoppingListItem.material_id == material.id).one()
+
+    svc.set_material_purchased(item.id, True)
+    attachment = svc.add_task_attachment(task.id, "docs/manual.pdf")
+    session.commit()
+
+    assert session.get(ShoppingListItem, item.id).is_purchased is True
+    assert attachment.file_path == "docs/manual.pdf"
+
+
+def test_new_recurrence_modes_compute_next_task(session):
+    schedule = RecurringSchedule(recurrence_type=RecurrenceType.WEEKLY)
+    task = Task(
+        title="Water plants",
+        description="",
+        priority=Priority.P3,
+        status=TaskStatus.IN_PROGRESS,
+        room_id="room",
+        recurring_schedule=schedule,
+    )
+    session.add_all([schedule, task])
+
+    svc = TaskService(session)
+    svc.transition_status(task, TaskStatus.COMPLETED)
+    session.commit()
+
+    created = session.query(Task).where(Task.parent_task_id == task.id).one()
+    assert created.due_date == datetime.combine(date.today() + timedelta(days=7), time.min)

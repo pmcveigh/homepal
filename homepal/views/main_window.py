@@ -58,16 +58,16 @@ class MainWindow(QMainWindow):
         self.calendar_panel = CalendarPanel(self.task_service)
         self.stack.addWidget(self.calendar_panel)
 
-        self.budget_finance_panel = BudgetFinancePanel()
+        self.budget_finance_panel = BudgetFinancePanel(self.task_service)
         self.stack.addWidget(self.budget_finance_panel)
 
-        self.household_members_panel = HouseholdMembersPanel()
+        self.household_members_panel = HouseholdMembersPanel(self.task_service, self.refresh_views)
         self.stack.addWidget(self.household_members_panel)
 
         self.meal_planning_panel = MealPlanningPanel()
         self.stack.addWidget(self.meal_planning_panel)
 
-        self.shopping_panel = ShoppingPanel()
+        self.shopping_panel = ShoppingPanel(self.task_service)
         self.stack.addWidget(self.shopping_panel)
 
         self.reports_panel = ReportsPanel(self.task_service)
@@ -105,7 +105,10 @@ class MainWindow(QMainWindow):
         self.task_panel.refresh()
         self.rooms_assets_panel.refresh()
         self.providers_panel.refresh()
+        self.household_members_panel.refresh()
         self.calendar_panel.refresh()
+        self.budget_finance_panel.refresh()
+        self.shopping_panel.refresh()
         self.update_status_bar()
 
     def update_status_bar(self) -> None:

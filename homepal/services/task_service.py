@@ -14,14 +14,24 @@ from homepal.models import (
     AssetCategory,
     AssetRoomLink,
     Attachment,
+    BudgetEntry,
+    HouseholdMember,
     AttributeDefinition,
     AttributeValue,
     LinkRole,
     Priority,
+    RecurrenceType,
+    RecurringSchedule,
     Property,
     ServiceProvider,
     Room,
+    ShoppingListItem,
     Task,
+    TaskAssignment,
+    TaskChecklistItem,
+    TaskDependency,
+    TaskMaterial,
+    TaskProviderLink,
     TaskAssetLink,
     TaskHistory,
     TaskRoomLink,
@@ -93,8 +103,15 @@ class TaskEditorDTO:
     about_asset_ids: list[str] = field(default_factory=list)
     uses_asset_ids: list[str] = field(default_factory=list)
     requires_assets: list[tuple[str, Decimal | None, str | None]] = field(default_factory=list)
-
-
+    assigned_member_ids: list[str] = field(default_factory=list)
+    provider_ids: list[str] = field(default_factory=list)
+    checklist_items: list[tuple[str, bool]] = field(default_factory=list)
+    dependency_task_ids: list[str] = field(default_factory=list)
+    required_materials: list[tuple[str, Decimal | None, str | None]] = field(default_factory=list)
+    purchased_material_labels: list[str] = field(default_factory=list)
+    attachments: list[str] = field(default_factory=list)
+    recurring_type: RecurrenceType | None = None
+    recurring_interval_days: int | None = None
 
 
 @dataclass(slots=True)
@@ -137,6 +154,8 @@ class TaskService:
         allowed = ALLOWED_TRANSITIONS[task.status]
         if new_status not in allowed:
             raise ValueError(f"Invalid transition {task.status.value} -> {new_status.value}")
+        if new_status == TaskStatus.IN_PROGRESS and not self.can_start_task(task.id):
+            raise ValueError("Cannot start task before dependencies are complete")
         old = task.status
         task.status = new_status
         self.session.flush()
@@ -294,6 +313,9 @@ class TaskService:
             for provider in providers
         ]
 
+    def list_household_members(self) -> list[HouseholdMember]:
+        return list(self.session.scalars(select(HouseholdMember).order_by(HouseholdMember.name.asc())))
+
     def create_provider(
         self,
         *,
@@ -411,6 +433,17 @@ class TaskService:
         self.session.query(TaskAssetLink).where(TaskAssetLink.task_id == task_id).delete(synchronize_session=False)
         self.session.query(TaskHistory).where(TaskHistory.task_id == task_id).delete(synchronize_session=False)
         self.session.query(Attachment).where(Attachment.task_id == task_id).delete(synchronize_session=False)
+        self.session.query(TaskAssignment).where(TaskAssignment.task_id == task_id).delete(synchronize_session=False)
+        self.session.query(TaskProviderLink).where(TaskProviderLink.task_id == task_id).delete(synchronize_session=False)
+        self.session.query(TaskChecklistItem).where(TaskChecklistItem.task_id == task_id).delete(synchronize_session=False)
+        self.session.query(TaskDependency).where(TaskDependency.task_id == task_id).delete(synchronize_session=False)
+        self.session.query(TaskDependency).where(TaskDependency.depends_on_task_id == task_id).delete(synchronize_session=False)
+        material_ids = list(self.session.scalars(select(TaskMaterial.id).where(TaskMaterial.task_id == task_id)))
+        if material_ids:
+            self.session.query(ShoppingListItem).where(ShoppingListItem.material_id.in_(material_ids)).delete(synchronize_session=False)
+        self.session.query(ShoppingListItem).where(ShoppingListItem.task_id == task_id).delete(synchronize_session=False)
+        self.session.query(TaskMaterial).where(TaskMaterial.task_id == task_id).delete(synchronize_session=False)
+        self.session.query(BudgetEntry).where(BudgetEntry.task_id == task_id).delete(synchronize_session=False)
         self.session.delete(task)
         self.session.flush()
 
@@ -424,11 +457,19 @@ class TaskService:
         is_urgent: bool = False,
         requires_follow_up: bool = False,
         estimated_effort_hours: Decimal | None = None,
+        estimated_cost: Decimal | None = None,
         labels: str | None = None,
         room_ids: list[str] | None = None,
         about_asset_ids: list[str] | None = None,
         uses_asset_ids: list[str] | None = None,
         requires_assets: list[tuple[str, Decimal | None, str | None]] | None = None,
+        assigned_member_ids: list[str] | None = None,
+        provider_ids: list[str] | None = None,
+        required_materials: list[tuple[str, Decimal | None, str | None]] | None = None,
+        checklist_items: list[str] | None = None,
+        dependency_task_ids: list[str] | None = None,
+        recurrence_type: RecurrenceType | None = None,
+        recurrence_interval_days: int | None = None,
     ) -> Task:
         fallback_room = self.ensure_default_room()
         normalized_room_ids = list(dict.fromkeys(room_ids or [fallback_room.id]))
@@ -451,6 +492,7 @@ class TaskService:
             is_urgent=is_urgent,
             requires_follow_up=requires_follow_up,
             estimated_effort_hours=estimated_effort_hours,
+            estimated_cost=estimated_cost,
             labels=labels.strip() if labels else None,
         )
         self.session.add(task)
@@ -459,7 +501,34 @@ class TaskService:
         self._set_task_room_links(task.id, normalized_room_ids)
         self._set_task_asset_links(task.id, normalized_about, normalized_uses, normalized_requires)
 
+        for member_id in assigned_member_ids or []:
+            self.session.add(TaskAssignment(task_id=task.id, member_id=member_id))
+        for provider_id in provider_ids or []:
+            self.session.add(TaskProviderLink(task_id=task.id, provider_id=provider_id))
+        for material_name, material_qty, material_unit in required_materials or []:
+            self.add_task_material(
+                task_id=task.id,
+                name=material_name,
+                quantity=material_qty,
+                unit=material_unit,
+                add_to_shopping=True,
+            )
+        for checklist_label in checklist_items or []:
+            self.add_task_checklist_item(task.id, checklist_label)
+        for depends_on in dependency_task_ids or []:
+            self.set_task_dependency(task.id, depends_on)
+
+        if recurrence_type:
+            schedule = RecurringSchedule(recurrence_type=recurrence_type, interval_value=recurrence_interval_days)
+            self.session.add(schedule)
+            self.session.flush()
+            task.recurring_schedule_id = schedule.id
+
+        if task.estimated_cost is not None:
+            self._upsert_budget_entry(task.id, task.estimated_cost)
+
         self._history(task.id, "status", None, TaskStatus.OPEN.value)
+        self.session.flush()
         return task
 
     def _set_task_room_links(self, task_id: str, room_ids: list[str]) -> None:
@@ -490,6 +559,14 @@ class TaskService:
                     unit=unit,
                 )
             )
+        self.session.flush()
+
+    def _upsert_budget_entry(self, task_id: str, amount: Decimal) -> None:
+        entry = self.session.scalar(select(BudgetEntry).where(BudgetEntry.task_id == task_id))
+        if entry is None:
+            self.session.add(BudgetEntry(task_id=task_id, amount=amount, category="Task"))
+        else:
+            entry.amount = amount
         self.session.flush()
 
     def list_tasks(self) -> list[Task]:
@@ -573,17 +650,22 @@ class TaskService:
         task = self.session.get(Task, task_id)
         if not task:
             raise ValueError("Task not found")
+
         room_ids = list(self.session.scalars(select(TaskRoomLink.room_id).where(TaskRoomLink.task_id == task_id)))
         about_assets = list(self.session.scalars(select(TaskAssetLink.asset_id).where(TaskAssetLink.task_id == task_id, TaskAssetLink.role == LinkRole.ABOUT)))
         uses_assets = list(self.session.scalars(select(TaskAssetLink.asset_id).where(TaskAssetLink.task_id == task_id, TaskAssetLink.role == LinkRole.USES)))
-        requires_assets = list(
-            self.session.execute(
-                select(TaskAssetLink.asset_id, TaskAssetLink.quantity, TaskAssetLink.unit).where(
-                    TaskAssetLink.task_id == task_id,
-                    TaskAssetLink.role == LinkRole.REQUIRES,
-                )
-            )
-        )
+        requires_assets = list(self.session.execute(select(TaskAssetLink.asset_id, TaskAssetLink.quantity, TaskAssetLink.unit).where(TaskAssetLink.task_id == task_id, TaskAssetLink.role == LinkRole.REQUIRES)))
+
+        assigned_member_ids = list(self.session.scalars(select(TaskAssignment.member_id).where(TaskAssignment.task_id == task_id)))
+        provider_ids = list(self.session.scalars(select(TaskProviderLink.provider_id).where(TaskProviderLink.task_id == task_id)))
+        checklist_items = list(self.session.execute(select(TaskChecklistItem.label, TaskChecklistItem.is_completed).where(TaskChecklistItem.task_id == task_id).order_by(TaskChecklistItem.id.asc())))
+        dependency_task_ids = list(self.session.scalars(select(TaskDependency.depends_on_task_id).where(TaskDependency.task_id == task_id)))
+
+        materials = list(self.session.execute(select(TaskMaterial.name, TaskMaterial.quantity, TaskMaterial.unit).where(TaskMaterial.task_id == task_id).order_by(TaskMaterial.id.asc())))
+        purchased_material_labels = list(self.session.scalars(select(ShoppingListItem.label).where(ShoppingListItem.task_id == task_id, ShoppingListItem.is_purchased.is_(True))))
+        attachments = list(self.session.scalars(select(Attachment.file_path).where(Attachment.task_id == task_id).order_by(Attachment.created_at.asc())))
+
+        schedule = task.recurring_schedule
         return TaskEditorDTO(
             id=task.id,
             title=task.title,
@@ -599,6 +681,15 @@ class TaskService:
             about_asset_ids=about_assets,
             uses_asset_ids=uses_assets,
             requires_assets=[(item[0], item[1], item[2]) for item in requires_assets],
+            assigned_member_ids=assigned_member_ids,
+            provider_ids=provider_ids,
+            checklist_items=[(item[0], bool(item[1])) for item in checklist_items],
+            dependency_task_ids=dependency_task_ids,
+            required_materials=[(item[0], item[1], item[2]) for item in materials],
+            purchased_material_labels=purchased_material_labels,
+            attachments=attachments,
+            recurring_type=schedule.recurrence_type if schedule else None,
+            recurring_interval_days=schedule.interval_value if schedule else None,
         )
 
     def save_task_editor_dto(self, dto: TaskEditorDTO) -> Task:
@@ -629,7 +720,133 @@ class TaskService:
 
         self._set_task_room_links(task.id, dto.room_ids)
         self._set_task_asset_links(task.id, dto.about_asset_ids, dto.uses_asset_ids, dto.requires_assets)
+
+        self.session.query(TaskAssignment).where(TaskAssignment.task_id == task.id).delete(synchronize_session=False)
+        for member_id in dto.assigned_member_ids:
+            self.session.add(TaskAssignment(task_id=task.id, member_id=member_id))
+
+        self.session.query(TaskProviderLink).where(TaskProviderLink.task_id == task.id).delete(synchronize_session=False)
+        for provider_id in dto.provider_ids:
+            self.session.add(TaskProviderLink(task_id=task.id, provider_id=provider_id))
+
+        self.session.query(TaskChecklistItem).where(TaskChecklistItem.task_id == task.id).delete(synchronize_session=False)
+        for label, is_completed in dto.checklist_items:
+            cleaned = label.strip()
+            if cleaned:
+                self.session.add(TaskChecklistItem(task_id=task.id, label=cleaned, is_completed=bool(is_completed)))
+
+        self.session.query(TaskDependency).where(TaskDependency.task_id == task.id).delete(synchronize_session=False)
+        for dependency_id in dto.dependency_task_ids:
+            if dependency_id != task.id:
+                self.session.add(TaskDependency(task_id=task.id, depends_on_task_id=dependency_id))
+
+        material_ids = list(self.session.scalars(select(TaskMaterial.id).where(TaskMaterial.task_id == task.id)))
+        if material_ids:
+            self.session.query(ShoppingListItem).where(ShoppingListItem.material_id.in_(material_ids)).delete(synchronize_session=False)
+        self.session.query(TaskMaterial).where(TaskMaterial.task_id == task.id).delete(synchronize_session=False)
+        purchased_labels = set(dto.purchased_material_labels)
+        for name, quantity, unit in dto.required_materials:
+            cleaned = name.strip()
+            if not cleaned:
+                continue
+            material = TaskMaterial(task_id=task.id, name=cleaned, quantity=quantity, unit=unit.strip() if unit else None)
+            self.session.add(material)
+            self.session.flush()
+            self.session.add(ShoppingListItem(task_id=task.id, material_id=material.id, label=cleaned, is_purchased=cleaned in purchased_labels))
+
+        self.session.query(Attachment).where(Attachment.task_id == task.id).delete(synchronize_session=False)
+        for path in dto.attachments:
+            cleaned = path.strip()
+            if cleaned:
+                self.session.add(Attachment(task_id=task.id, file_path=cleaned))
+
+        if dto.recurring_type:
+            schedule = task.recurring_schedule
+            if schedule is None:
+                schedule = RecurringSchedule(recurrence_type=dto.recurring_type, interval_value=dto.recurring_interval_days)
+                self.session.add(schedule)
+                self.session.flush()
+                task.recurring_schedule_id = schedule.id
+            else:
+                schedule.recurrence_type = dto.recurring_type
+                schedule.interval_value = dto.recurring_interval_days
+        else:
+            task.recurring_schedule_id = None
+
+        if task.estimated_cost is not None:
+            self._upsert_budget_entry(task.id, task.estimated_cost)
+        else:
+            self.session.query(BudgetEntry).where(BudgetEntry.task_id == task.id).delete(synchronize_session=False)
+
+        self.session.flush()
         return task
+
+    def create_household_member(self, *, name: str, email: str = "") -> HouseholdMember:
+        if not name.strip():
+            raise ValueError("Member name is required")
+        member = HouseholdMember(name=name.strip(), email=email.strip() or None)
+        self.session.add(member)
+        self.session.flush()
+        return member
+
+    def link_task_to_provider(self, task_id: str, provider_id: str) -> None:
+        existing = self.session.get(TaskProviderLink, {"task_id": task_id, "provider_id": provider_id})
+        if existing is None:
+            self.session.add(TaskProviderLink(task_id=task_id, provider_id=provider_id))
+            self.session.flush()
+
+    def add_task_material(
+        self,
+        *,
+        task_id: str,
+        name: str,
+        quantity: Decimal | None = None,
+        unit: str | None = None,
+        add_to_shopping: bool = True,
+    ) -> TaskMaterial:
+        material = TaskMaterial(task_id=task_id, name=name.strip(), quantity=quantity, unit=unit.strip() if unit else None)
+        self.session.add(material)
+        self.session.flush()
+        if add_to_shopping:
+            self.session.add(ShoppingListItem(task_id=task_id, material_id=material.id, label=material.name))
+            self.session.flush()
+        return material
+
+    def set_material_purchased(self, shopping_item_id: str, purchased: bool = True) -> None:
+        item = self.session.get(ShoppingListItem, shopping_item_id)
+        if item is None:
+            raise ValueError("Shopping item not found")
+        item.is_purchased = purchased
+        self.session.flush()
+
+    def add_task_checklist_item(self, task_id: str, label: str) -> TaskChecklistItem:
+        item = TaskChecklistItem(task_id=task_id, label=label.strip(), is_completed=False)
+        self.session.add(item)
+        self.session.flush()
+        return item
+
+    def set_task_dependency(self, task_id: str, depends_on_task_id: str) -> None:
+        if task_id == depends_on_task_id:
+            raise ValueError("Task cannot depend on itself")
+        dep = self.session.get(TaskDependency, {"task_id": task_id, "depends_on_task_id": depends_on_task_id})
+        if dep is None:
+            self.session.add(TaskDependency(task_id=task_id, depends_on_task_id=depends_on_task_id))
+            self.session.flush()
+
+    def can_start_task(self, task_id: str) -> bool:
+        deps = list(self.session.scalars(select(TaskDependency.depends_on_task_id).where(TaskDependency.task_id == task_id)))
+        if not deps:
+            return True
+        completed_count = self.session.scalar(
+            select(func.count(Task.id)).where(Task.id.in_(deps), Task.status == TaskStatus.COMPLETED)
+        ) or 0
+        return completed_count == len(deps)
+
+    def add_task_attachment(self, task_id: str, file_path: str) -> Attachment:
+        attachment = Attachment(task_id=task_id, file_path=file_path.strip())
+        self.session.add(attachment)
+        self.session.flush()
+        return attachment
 
     def suggest_primary_rooms_from_about_assets(self, about_asset_ids: list[str]) -> list[str]:
         if not about_asset_ids:
