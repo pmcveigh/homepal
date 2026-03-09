@@ -10,6 +10,7 @@ from homepal.config import AppPaths, ensure_directories
 from homepal.db import Base, SessionLocal, configure_session, create_sqlite_engine, run_integrity_check
 from homepal.models import AssetCategory, AttributeDefinition
 from homepal.services.task_service import TaskService
+from homepal.ui.theme import apply_dark_theme
 from homepal.views.main_window import MainWindow
 
 
@@ -56,6 +57,7 @@ def main() -> int:
     bootstrap_db(paths)
 
     app = QApplication(sys.argv)
+    apply_dark_theme(app)
     session = SessionLocal()
     if not verify_seed_data(session):
         session.close()
