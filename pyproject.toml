@@ -18,4 +18,4 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [tool.setuptools]
-packages = ["homepal", "homepal.models", "homepal.services", "homepal.views", "homepal.widgets"]
+packages = ["homepal", "homepal.models", "homepal.services", "homepal.views", "homepal.widgets", "homepal.backend", "homepal.backend.controllers", "homepal.backend.viewmodels"]

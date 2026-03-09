@@ -3,15 +3,17 @@ from __future__ import annotations
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
+from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtQml import QQmlApplicationEngine
 
+from homepal.backend.controllers import AppController
 from homepal.config import AppPaths, ensure_directories
 from homepal.db import Base, SessionLocal, configure_session, create_sqlite_engine, run_integrity_check
 from homepal.models import AssetCategory, AttributeDefinition
 from homepal.services.task_service import TaskService
-from homepal.ui.theme import apply_dark_theme
-from homepal.views.main_window import MainWindow
 
 
 def configure_logging(paths: AppPaths) -> None:
@@ -57,15 +59,22 @@ def main() -> int:
     bootstrap_db(paths)
 
     app = QApplication(sys.argv)
-    apply_dark_theme(app)
     session = SessionLocal()
     if not verify_seed_data(session):
         session.close()
         return 1
 
     task_service = TaskService(session)
-    window = MainWindow(task_service)
-    window.show()
+    app_controller = AppController(task_service)
+
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("appController", app_controller)
+    qml_path = Path(__file__).resolve().parent / "ui" / "qml" / "App.qml"
+    engine.load(QUrl.fromLocalFile(str(qml_path)))
+    if not engine.rootObjects():
+        session.close()
+        return 1
+
     exit_code = app.exec()
     session.close()
     return exit_code
