@@ -507,6 +507,10 @@ class TaskPanel(QWidget):
             self.task_service.session.rollback()
             QMessageBox.warning(self, "Save failed", str(exc))
 
+    def _new_task(self):
+        """Backward-compatible alias for legacy callers."""
+        self._start_new()
+
     def _start_new(self):
         if not self._confirm_navigation_if_dirty():
             return

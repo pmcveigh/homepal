@@ -84,7 +84,8 @@ class MainWindow(QMainWindow):
         search = SearchBar("Search tasks")
         search.textChanged.connect(self.task_panel.search_input.setText)
         page.header.add_action_widget(search)
-        page.header.add_action_widget(QuickAddButton("Add Task", self.task_panel._new_task))
+        create_task = getattr(self.task_panel, "_start_new", None) or getattr(self.task_panel, "_new_task")
+        page.header.add_action_widget(QuickAddButton("Add Task", create_task))
         page.content_layout.addWidget(self.task_panel)
         self.stack.addWidget(page)
 

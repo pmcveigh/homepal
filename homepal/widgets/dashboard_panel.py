@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGridLayout, QLabel, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
 
-from homepal.services.task_service import TaskService
+from homepal.services.task_service import TaskListFilters, TaskListRow, TaskService
 from homepal.ui.components import ContentCard, DashboardTile
 
 
@@ -35,17 +35,17 @@ class DashboardPanel(QWidget):
 
         lower = QGridLayout()
         lower.setSpacing(12)
-        self.upcoming_list = self._build_list_card("Upcoming tasks")
-        self.room_alerts_list = self._build_list_card("Room alerts")
-        self.maintenance_list = self._build_list_card("Asset maintenance")
-        lower.addWidget(self.upcoming_list.parentWidget(), 0, 0)
-        lower.addWidget(self.room_alerts_list.parentWidget(), 0, 1)
-        lower.addWidget(self.maintenance_list.parentWidget(), 1, 0, 1, 2)
+        upcoming_card, self.upcoming_list = self._build_list_card("Upcoming tasks")
+        room_alerts_card, self.room_alerts_list = self._build_list_card("Room alerts")
+        maintenance_card, self.maintenance_list = self._build_list_card("Asset maintenance")
+        lower.addWidget(upcoming_card, 0, 0)
+        lower.addWidget(room_alerts_card, 0, 1)
+        lower.addWidget(maintenance_card, 1, 0, 1, 2)
         layout.addLayout(lower)
 
         self.refresh()
 
-    def _build_list_card(self, title: str) -> QListWidget:
+    def _build_list_card(self, title: str) -> tuple[ContentCard, QListWidget]:
         card = ContentCard()
         lay = QVBoxLayout(card)
         lay.setContentsMargins(12, 12, 12, 12)
@@ -55,7 +55,23 @@ class DashboardPanel(QWidget):
         lst.setAlternatingRowColors(False)
         lay.addWidget(heading)
         lay.addWidget(lst)
-        return lst
+        return card, lst
+
+
+    def _list_dashboard_rows(self) -> list[TaskListRow]:
+        if hasattr(self.task_service, "list_task_rows"):
+            filters = TaskListFilters(
+                statuses=[],
+                due_range="next30",
+                sort_by="date",
+            )
+            return self.task_service.list_task_rows(filters)[:20]
+
+        if hasattr(self.task_service, "build_task_filters") and hasattr(self.task_service, "list_tasks_for_table"):
+            filters = self.task_service.build_task_filters()
+            return self.task_service.list_tasks_for_table(filters)[:20]
+
+        return []
 
     def refresh(self) -> None:
         stats = self.task_service.get_dashboard_stats()
@@ -66,21 +82,29 @@ class DashboardPanel(QWidget):
         self.rooms_tile.value_label.setText(str(stats.total_rooms))
         self.assets_tile.value_label.setText(str(stats.total_assets))
 
-        filters = self.task_service.build_task_filters()
-        rows = self.task_service.list_tasks_for_table(filters)[:20]
+        rows = self._list_dashboard_rows()
         self.upcoming_list.clear()
         self.room_alerts_list.clear()
         self.maintenance_list.clear()
         for row in rows:
-            due = row.due_date.strftime("%d %b") if row.due_date else "No due"
-            line = f"{row.title} · {due}"
+            due_date = getattr(row, "due_date", None)
+            due = due_date.strftime("%d %b") if due_date else "No due"
+            title = getattr(row, "title", "Untitled task")
+            room_name = getattr(row, "room_name", None) or "General"
+
+            line = f"{title} · {due}"
             item = QListWidgetItem(line)
-            item.setData(Qt.UserRole, row.id)
+            item.setData(Qt.UserRole, getattr(row, "id", None))
             self.upcoming_list.addItem(item)
-            if row.is_overdue:
-                self.room_alerts_list.addItem(f"{row.room_name or 'General'} · {row.title}")
-            if row.is_recurring:
-                self.maintenance_list.addItem(f"{row.asset_names[0] if row.asset_names else 'House'} · {row.title}")
+
+            if getattr(row, "is_overdue", False):
+                self.room_alerts_list.addItem(f"{room_name} · {title}")
+
+            asset_count = getattr(row, "asset_count", None)
+            asset_names = getattr(row, "asset_names", [])
+            if (asset_count is not None and asset_count > 0) or asset_names:
+                scope = asset_names[0] if asset_names else room_name
+                self.maintenance_list.addItem(f"{scope} · {title}")
         if self.room_alerts_list.count() == 0:
             self.room_alerts_list.addItem("No active alerts")
         if self.maintenance_list.count() == 0:
