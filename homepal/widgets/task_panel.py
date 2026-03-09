@@ -29,7 +29,7 @@ from homepal.services.task_service import TaskEditorDTO, TaskListFilters, TaskLi
 
 
 class TaskTableModel(QAbstractTableModel):
-    HEADERS = ["Title", "Priority", "Status", "Due", "Rooms", "Assets", "Flags", "Updated"]
+    HEADERS = ["Title", "Priority", "Status", "Due", "Room", "Assignees", "Providers", "Flags", "Updated"]
 
     def __init__(self):
         super().__init__()
@@ -60,9 +60,10 @@ class TaskTableModel(QAbstractTableModel):
             row.priority.value,
             row.status.value,
             row.due_date.strftime("%Y-%m-%d %H:%M") if row.due_date else "-",
-            str(row.room_count),
-            str(row.asset_count),
-            ", ".join([x for x in ["Urgent" if row.is_urgent else "", "Follow-up" if row.requires_follow_up else ""] if x]) or "-",
+            row.room_name or "-",
+            ", ".join(row.assignee_names) or "-",
+            ", ".join(row.provider_names) or "-",
+            ", ".join([x for x in ["OVERDUE" if row.is_overdue else "", "Due today" if row.is_due_today else "", "Urgent" if row.is_urgent else "", "Follow-up" if row.requires_follow_up else ""] if x]) or "-",
             row.updated_at.strftime("%Y-%m-%d %H:%M"),
         ]
         return values[index.column()]
@@ -90,28 +91,41 @@ class TaskPanel(QWidget):
         self.priority_filter = QComboBox(); self.priority_filter.addItem("Any priority", [])
         for priority in Priority:
             self.priority_filter.addItem(priority.value, [priority])
-        self.due_filter = QComboBox(); self.due_filter.addItems(["Any", "Overdue", "Next 7 days", "Next 30 days"])
+        self.due_filter = QComboBox(); self.due_filter.addItems(["Any", "Overdue", "Due today", "Due this week", "Next 7 days", "Next 30 days"])
         self.room_filter = QComboBox(); self.asset_filter = QComboBox()
+        self.member_filter = QComboBox(); self.provider_filter = QComboBox()
+        self.sort_filter = QComboBox(); self.sort_filter.addItems(["Recently updated", "Priority", "Due date", "Room", "Assignee"])
         self.search_input = QLineEdit(); self.search_input.setPlaceholderText("Search title/description")
-        for widget in [self.status_filter, self.priority_filter, self.due_filter, self.room_filter, self.asset_filter, self.search_input]:
+        for widget in [self.status_filter, self.priority_filter, self.due_filter, self.room_filter, self.asset_filter, self.member_filter, self.provider_filter, self.sort_filter, self.search_input]:
             filter_row.addWidget(widget)
         left_layout.addLayout(filter_row)
 
         self.model = TaskTableModel()
+        self.view_tabs = QTabWidget()
         self.table = QTableView()
         self.table.setModel(self.model)
         self.table.setSelectionBehavior(QTableView.SelectRows)
         self.table.setSelectionMode(QTableView.SingleSelection)
-        left_layout.addWidget(self.table)
+        self.kanban_list = QListWidget()
+        self.calendar_list = QListWidget()
+        self.grouped_list = QListWidget()
+        self.view_tabs.addTab(self.table, "List")
+        self.view_tabs.addTab(self.kanban_list, "Kanban")
+        self.view_tabs.addTab(self.calendar_list, "Calendar")
+        self.view_tabs.addTab(self.grouped_list, "Grouped")
+        left_layout.addWidget(self.view_tabs)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
         button_row = QHBoxLayout()
         self.new_btn = QPushButton("New task")
+        self.duplicate_btn = QPushButton("Duplicate")
+        self.template_btn = QPushButton("Save as template")
+        self.generate_btn = QPushButton("Generate recurring")
         self.save_btn = QPushButton("Save")
         self.discard_btn = QPushButton("Discard")
         self.delete_btn = QPushButton("Delete")
-        for button in [self.new_btn, self.save_btn, self.discard_btn, self.delete_btn]:
+        for button in [self.new_btn, self.duplicate_btn, self.template_btn, self.generate_btn, self.save_btn, self.discard_btn, self.delete_btn]:
             button_row.addWidget(button)
         button_row.addStretch(1)
         right_layout.addLayout(button_row)
@@ -137,9 +151,15 @@ class TaskPanel(QWidget):
         self.due_filter.currentIndexChanged.connect(self.refresh)
         self.room_filter.currentIndexChanged.connect(self.refresh)
         self.asset_filter.currentIndexChanged.connect(self.refresh)
+        self.member_filter.currentIndexChanged.connect(self.refresh)
+        self.provider_filter.currentIndexChanged.connect(self.refresh)
+        self.sort_filter.currentIndexChanged.connect(self.refresh)
         self.search_input.textChanged.connect(self.refresh)
         self.table.selectionModel().selectionChanged.connect(self._on_selected)
         self.new_btn.clicked.connect(self._start_new)
+        self.duplicate_btn.clicked.connect(self._duplicate_current)
+        self.template_btn.clicked.connect(self._save_template_copy)
+        self.generate_btn.clicked.connect(self._generate_recurring)
         self.save_btn.clicked.connect(self._save)
         self.discard_btn.clicked.connect(self._discard)
         self.delete_btn.clicked.connect(self._delete_task)
@@ -154,12 +174,12 @@ class TaskPanel(QWidget):
         self.priority_input = QComboBox(); self.status_input = QComboBox()
         self.due_input = QDateTimeEdit(); self.due_input.setCalendarPopup(True); self.due_input.setDisplayFormat("yyyy-MM-dd HH:mm")
         self.due_input.setDateTime(datetime.now())
-        self.est_cost_input = QLineEdit(); self.actual_cost_input = QLineEdit(); self.effort_input = QLineEdit(); self.follow_input = QCheckBox("Follow-up needed")
+        self.est_cost_input = QLineEdit(); self.actual_cost_input = QLineEdit(); self.effort_input = QLineEdit(); self.follow_input = QCheckBox("Follow-up needed"); self.template_input = QCheckBox("Template task")
         for priority in Priority:
             self.priority_input.addItem(priority.value, priority)
         for status in TaskStatus:
             self.status_input.addItem(status.value, status)
-        for label, field in [("Title", self.title_input), ("Description", self.desc_input), ("Priority", self.priority_input), ("Status", self.status_input), ("Due", self.due_input), ("Estimated cost", self.est_cost_input), ("Actual cost", self.actual_cost_input), ("Effort (hours)", self.effort_input), ("", self.follow_input)]:
+        for label, field in [("Title", self.title_input), ("Description", self.desc_input), ("Priority", self.priority_input), ("Status", self.status_input), ("Due", self.due_input), ("Estimated cost", self.est_cost_input), ("Actual cost", self.actual_cost_input), ("Effort (hours)", self.effort_input), ("", self.follow_input), ("", self.template_input)]:
             form.addRow(label, field)
         self.tabs.addTab(tab, "Summary")
 
@@ -270,6 +290,8 @@ class TaskPanel(QWidget):
 
         self.room_filter.clear(); self.room_filter.addItem("Any room", None)
         self.asset_filter.clear(); self.asset_filter.addItem("Any asset", None)
+        self.member_filter.clear(); self.member_filter.addItem("Any assignee", None)
+        self.provider_filter.clear(); self.provider_filter.addItem("Any provider", None)
         self.room_picker.clear(); self.required_picker.clear(); self.dependency_picker.clear()
 
         for room in rooms:
@@ -283,12 +305,14 @@ class TaskPanel(QWidget):
 
         self.members_list.clear()
         for member in members:
+            self.member_filter.addItem(member.name, member.id)
             item = QListWidgetItem(member.name)
             item.setData(Qt.UserRole, member.id)
             self.members_list.addItem(item)
 
         self.providers_list.clear()
         for provider in providers:
+            self.provider_filter.addItem(provider.name, provider.id)
             item = QListWidgetItem(f"{provider.name} ({provider.service_type})")
             item.setData(Qt.UserRole, provider.id)
             self.providers_list.addItem(item)
@@ -408,6 +432,7 @@ class TaskPanel(QWidget):
             attachments=[self.attachments.item(i).data(Qt.UserRole) for i in range(self.attachments.count())],
             recurring_type=self.recurrence_type.currentData(),
             recurring_interval_days=int(self.recurrence_interval.text().strip()) if self.recurrence_interval.text().strip() else None,
+            is_template=self.template_input.isChecked(),
         )
 
     def _apply(self, dto: TaskEditorDTO):
@@ -421,6 +446,7 @@ class TaskPanel(QWidget):
         self.actual_cost_input.setText(str(dto.actual_cost or ""))
         self.effort_input.setText(str(dto.effort_hours or ""))
         self.follow_input.setChecked(dto.follow_up_needed)
+        self.template_input.setChecked(dto.is_template)
 
         for list_widget in [self.rooms_selected, self.required_assets, self.materials_list, self.checklist, self.dependencies, self.attachments]:
             list_widget.clear()
@@ -527,10 +553,78 @@ class TaskPanel(QWidget):
         filters = TaskListFilters(
             statuses=self.status_filter.currentData() or [],
             priorities=self.priority_filter.currentData() or [],
-            due_range={"Any": "any", "Overdue": "overdue", "Next 7 days": "next7", "Next 30 days": "next30"}[self.due_filter.currentText()],
+            due_range={"Any": "any", "Overdue": "overdue", "Due today": "today", "Due this week": "week", "Next 7 days": "next7", "Next 30 days": "next30"}[self.due_filter.currentText()],
             room_id=self.room_filter.currentData(),
             asset_id=self.asset_filter.currentData(),
+            member_id=self.member_filter.currentData(),
+            provider_id=self.provider_filter.currentData(),
+            sort_by={"Recently updated": "updated", "Priority": "priority", "Due date": "date", "Room": "room", "Assignee": "assignee"}[self.sort_filter.currentText()],
             search=self.search_input.text(),
         )
-        self.model.set_rows(self.task_service.list_task_rows(filters))
+        rows = self.task_service.list_task_rows(filters)
+        self.model.set_rows(rows)
         self.table.resizeColumnsToContents()
+        self._refresh_secondary_views(filters, rows)
+
+    def _refresh_secondary_views(self, filters: TaskListFilters, rows: list[TaskListRow]) -> None:
+        self.kanban_list.clear()
+        for status, items in self.task_service.list_kanban_rows(filters).items():
+            self.kanban_list.addItem(f"=== {status.value} ({len(items)}) ===")
+            for row in items:
+                self.kanban_list.addItem(f"• {row.title} ({row.priority.value})")
+
+        self.calendar_list.clear()
+        dated = sorted([r for r in rows if r.due_date], key=lambda r: r.due_date)
+        current_day = None
+        for row in dated:
+            day = row.due_date.date()
+            if day != current_day:
+                self.calendar_list.addItem(f"=== {day.isoformat()} ===")
+                current_day = day
+            self.calendar_list.addItem(f"• {row.title} [{row.status.value}]")
+
+        self.grouped_list.clear()
+        self.grouped_list.addItem("=== By room ===")
+        for room, items in self.task_service.list_tasks_grouped_by_room(filters).items():
+            self.grouped_list.addItem(f"{room}: {len(items)}")
+        self.grouped_list.addItem("=== By household member ===")
+        for member, items in self.task_service.list_tasks_grouped_by_member(filters).items():
+            self.grouped_list.addItem(f"{member}: {len(items)}")
+        overdue, today, week = self.task_service.get_due_highlights(filters)
+        self.grouped_list.addItem(f"⚠ Overdue: {len(overdue)}")
+        self.grouped_list.addItem(f"Today: {len(today)}")
+        self.grouped_list.addItem(f"This week: {len(week)}")
+
+    def _duplicate_current(self):
+        if not self._current_task_id:
+            return
+        try:
+            task = self.task_service.duplicate_task(self._current_task_id, as_template=False)
+            self.task_service.session.commit()
+            self._apply(self.task_service.get_task_editor_dto(task.id))
+            self.refresh()
+        except Exception as exc:
+            self.task_service.session.rollback()
+            QMessageBox.warning(self, "Duplicate failed", str(exc))
+
+    def _save_template_copy(self):
+        if not self._current_task_id:
+            return
+        try:
+            task = self.task_service.duplicate_task(self._current_task_id, as_template=True)
+            self.task_service.session.commit()
+            self._apply(self.task_service.get_task_editor_dto(task.id))
+            self.refresh()
+        except Exception as exc:
+            self.task_service.session.rollback()
+            QMessageBox.warning(self, "Template save failed", str(exc))
+
+    def _generate_recurring(self):
+        try:
+            count = self.task_service.generate_recurring_tasks()
+            self.task_service.session.commit()
+            self.refresh()
+            QMessageBox.information(self, "Recurring tasks", f"Generated {count} recurring task(s).")
+        except Exception as exc:
+            self.task_service.session.rollback()
+            QMessageBox.warning(self, "Recurring generation failed", str(exc))

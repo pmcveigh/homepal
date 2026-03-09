@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -69,6 +70,10 @@ class TaskListFilters:
     due_range: str = "any"
     room_id: str | None = None
     asset_id: str | None = None
+    member_id: str | None = None
+    provider_id: str | None = None
+    sort_by: str = "updated"
+    include_templates: bool = False
     search: str = ""
 
 
@@ -82,6 +87,12 @@ class TaskListRow:
     due_date: datetime | None
     room_count: int
     asset_count: int
+    room_name: str | None
+    assignee_names: list[str]
+    provider_names: list[str]
+    is_overdue: bool
+    is_due_today: bool
+    is_due_this_week: bool
     is_urgent: bool
     requires_follow_up: bool
     updated_at: datetime
@@ -112,6 +123,7 @@ class TaskEditorDTO:
     attachments: list[str] = field(default_factory=list)
     recurring_type: RecurrenceType | None = None
     recurring_interval_days: int | None = None
+    is_template: bool = False
 
 
 @dataclass(slots=True)
@@ -470,6 +482,7 @@ class TaskService:
         dependency_task_ids: list[str] | None = None,
         recurrence_type: RecurrenceType | None = None,
         recurrence_interval_days: int | None = None,
+        is_template: bool = False,
     ) -> Task:
         fallback_room = self.ensure_default_room()
         normalized_room_ids = list(dict.fromkeys(room_ids or [fallback_room.id]))
@@ -494,6 +507,7 @@ class TaskService:
             estimated_effort_hours=estimated_effort_hours,
             estimated_cost=estimated_cost,
             labels=labels.strip() if labels else None,
+            is_template=is_template,
         )
         self.session.add(task)
         self.session.flush()
@@ -581,7 +595,13 @@ class TaskService:
         )
         asset_count_subq = (
             select(TaskAssetLink.task_id, func.count(TaskAssetLink.asset_id).label("asset_count"))
-                        .group_by(TaskAssetLink.task_id)
+            .group_by(TaskAssetLink.task_id)
+            .subquery()
+        )
+        room_name_subq = (
+            select(TaskRoomLink.task_id, func.min(Room.name).label("room_name"))
+            .join(Room, Room.id == TaskRoomLink.room_id)
+            .group_by(TaskRoomLink.task_id)
             .subquery()
         )
 
@@ -595,30 +615,42 @@ class TaskService:
                 Task.due_date,
                 func.coalesce(room_count_subq.c.room_count, 0),
                 func.coalesce(asset_count_subq.c.asset_count, 0),
+                room_name_subq.c.room_name,
                 Task.is_urgent,
                 Task.requires_follow_up,
                 Task.updated_at,
             )
             .outerjoin(room_count_subq, room_count_subq.c.task_id == Task.id)
             .outerjoin(asset_count_subq, asset_count_subq.c.task_id == Task.id)
-            .order_by(Task.updated_at.desc())
+            .outerjoin(room_name_subq, room_name_subq.c.task_id == Task.id)
         )
 
+        if not filters.include_templates:
+            query = query.where(Task.is_template.is_(False))
         if filters.statuses:
             query = query.where(Task.status.in_(filters.statuses))
         if filters.priorities:
             query = query.where(Task.priority.in_(filters.priorities))
         if filters.room_id:
-            query = query.where(select(TaskRoomLink.task_id).where(TaskRoomLink.room_id == filters.room_id).exists())
+            query = query.where(select(TaskRoomLink.task_id).where(TaskRoomLink.room_id == filters.room_id, TaskRoomLink.task_id == Task.id).exists())
         if filters.asset_id:
-            query = query.where(select(TaskAssetLink.task_id).where(TaskAssetLink.asset_id == filters.asset_id).exists())
+            query = query.where(select(TaskAssetLink.task_id).where(TaskAssetLink.asset_id == filters.asset_id, TaskAssetLink.task_id == Task.id).exists())
+        if filters.member_id:
+            query = query.where(select(TaskAssignment.task_id).where(TaskAssignment.member_id == filters.member_id, TaskAssignment.task_id == Task.id).exists())
+        if filters.provider_id:
+            query = query.where(select(TaskProviderLink.task_id).where(TaskProviderLink.provider_id == filters.provider_id, TaskProviderLink.task_id == Task.id).exists())
 
         today = date.today()
         day_start = datetime.combine(today, time.min)
+        day_end = datetime.combine(today, time.max)
         week_end = datetime.combine(today + timedelta(days=7), time.max)
         month_end = datetime.combine(today + timedelta(days=30), time.max)
         if filters.due_range == "overdue":
             query = query.where(Task.due_date.is_not(None), Task.due_date < day_start)
+        elif filters.due_range == "today":
+            query = query.where(Task.due_date.is_not(None), Task.due_date >= day_start, Task.due_date <= day_end)
+        elif filters.due_range == "week":
+            query = query.where(Task.due_date.is_not(None), Task.due_date >= day_start, Task.due_date <= week_end)
         elif filters.due_range == "next7":
             query = query.where(Task.due_date.is_not(None), Task.due_date >= day_start, Task.due_date <= week_end)
         elif filters.due_range == "next30":
@@ -628,23 +660,52 @@ class TaskService:
             q = f"%{filters.search.strip()}%"
             query = query.where(or_(Task.title.ilike(q), Task.description.ilike(q)))
 
+        if filters.sort_by == "priority":
+            query = query.order_by(Task.priority.asc(), Task.due_date.asc().nulls_last())
+        elif filters.sort_by == "date":
+            query = query.order_by(Task.due_date.asc().nulls_last(), Task.priority.asc())
+        elif filters.sort_by == "room":
+            query = query.order_by(room_name_subq.c.room_name.asc().nulls_last(), Task.updated_at.desc())
+        elif filters.sort_by == "assignee":
+            query = query.order_by(Task.updated_at.desc())
+        else:
+            query = query.order_by(Task.updated_at.desc())
+
         rows = self.session.execute(query).all()
-        return [
-            TaskListRow(
-                id=row[0],
-                title=row[1],
-                description=row[2],
-                priority=row[3],
-                status=row[4],
-                due_date=row[5],
-                room_count=int(row[6]),
-                asset_count=int(row[7]),
-                is_urgent=bool(row[8]),
-                requires_follow_up=bool(row[9]),
-                updated_at=row[10],
-            )
-            for row in rows
-        ]
+        task_ids = [row[0] for row in rows]
+        assignees_by_task = defaultdict(list)
+        providers_by_task = defaultdict(list)
+        if task_ids:
+            for task_id, name in self.session.execute(
+                select(TaskAssignment.task_id, HouseholdMember.name)
+                .join(HouseholdMember, HouseholdMember.id == TaskAssignment.member_id)
+                .where(TaskAssignment.task_id.in_(task_ids))
+            ):
+                assignees_by_task[task_id].append(name)
+            for task_id, name in self.session.execute(
+                select(TaskProviderLink.task_id, ServiceProvider.name)
+                .join(ServiceProvider, ServiceProvider.id == TaskProviderLink.provider_id)
+                .where(TaskProviderLink.task_id.in_(task_ids))
+            ):
+                providers_by_task[task_id].append(name)
+
+        result = []
+        for row in rows:
+            due_date = row[5]
+            is_overdue = bool(due_date and due_date < day_start)
+            is_due_today = bool(due_date and day_start <= due_date <= day_end)
+            is_due_this_week = bool(due_date and day_start <= due_date <= week_end)
+            result.append(TaskListRow(
+                id=row[0], title=row[1], description=row[2], priority=row[3], status=row[4], due_date=due_date,
+                room_count=int(row[6]), asset_count=int(row[7]), room_name=row[8],
+                assignee_names=sorted(assignees_by_task.get(row[0], [])),
+                provider_names=sorted(providers_by_task.get(row[0], [])),
+                is_overdue=is_overdue, is_due_today=is_due_today, is_due_this_week=is_due_this_week,
+                is_urgent=bool(row[9]), requires_follow_up=bool(row[10]), updated_at=row[11],
+            ))
+        if filters.sort_by == "assignee":
+            result.sort(key=lambda r: ((r.assignee_names[0].lower() if r.assignee_names else "zzz"), -r.updated_at.timestamp()))
+        return result
 
     def get_task_editor_dto(self, task_id: str) -> TaskEditorDTO:
         task = self.session.get(Task, task_id)
@@ -690,6 +751,7 @@ class TaskService:
             attachments=attachments,
             recurring_type=schedule.recurrence_type if schedule else None,
             recurring_interval_days=schedule.interval_value if schedule else None,
+            is_template=task.is_template,
         )
 
     def save_task_editor_dto(self, dto: TaskEditorDTO) -> Task:
@@ -714,6 +776,7 @@ class TaskService:
         task.actual_cost = dto.actual_cost
         task.estimated_effort_hours = dto.effort_hours
         task.requires_follow_up = dto.follow_up_needed
+        task.is_template = dto.is_template
         task.room_id = dto.room_ids[0] if dto.room_ids else None
         task.asset_id = linked_asset_ids[0] if linked_asset_ids else None
         self.session.flush()
@@ -781,6 +844,78 @@ class TaskService:
         self.session.flush()
         return task
 
+
+    def duplicate_task(self, task_id: str, *, as_template: bool = False) -> Task:
+        source = self.get_task_editor_dto(task_id)
+        source.id = None
+        source.title = f"{source.title} (Copy)"
+        source.status = TaskStatus.OPEN
+        source.is_template = as_template
+        return self.save_task_editor_dto(source)
+
+    def create_task_from_template(self, template_task_id: str, *, due_date: datetime | None = None) -> Task:
+        dto = self.get_task_editor_dto(template_task_id)
+        dto.id = None
+        dto.status = TaskStatus.OPEN
+        dto.is_template = False
+        if due_date is not None:
+            dto.due_date = due_date
+        return self.save_task_editor_dto(dto)
+
+    def generate_recurring_tasks(self, *, as_of: date | None = None) -> int:
+        as_of = as_of or date.today()
+        created = 0
+        templates = self.session.scalars(
+            select(Task)
+            .where(Task.is_template.is_(True), Task.recurring_schedule_id.is_not(None))
+        ).all()
+        for template in templates:
+            if not template.recurring_schedule:
+                continue
+            due = compute_next_due_date(template.recurring_schedule, as_of - timedelta(days=1))
+            due_dt = datetime.combine(due, time.min)
+            exists = self.session.scalar(
+                select(func.count(Task.id)).where(
+                    Task.parent_task_id == template.id,
+                    Task.due_date == due_dt,
+                    Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]),
+                )
+            ) or 0
+            if exists:
+                continue
+            task = self.create_task_from_template(template.id, due_date=due_dt)
+            task.parent_task_id = template.id
+            created += 1
+        self.session.flush()
+        return created
+
+    def list_kanban_rows(self, filters: TaskListFilters | None = None) -> dict[TaskStatus, list[TaskListRow]]:
+        grouped = {status: [] for status in TaskStatus}
+        for row in self.list_task_rows(filters):
+            grouped[row.status].append(row)
+        return grouped
+
+    def list_tasks_grouped_by_room(self, filters: TaskListFilters | None = None) -> dict[str, list[TaskListRow]]:
+        grouped: dict[str, list[TaskListRow]] = defaultdict(list)
+        for row in self.list_task_rows(filters):
+            grouped[row.room_name or "Unassigned room"].append(row)
+        return dict(grouped)
+
+    def list_tasks_grouped_by_member(self, filters: TaskListFilters | None = None) -> dict[str, list[TaskListRow]]:
+        grouped: dict[str, list[TaskListRow]] = defaultdict(list)
+        for row in self.list_task_rows(filters):
+            if not row.assignee_names:
+                grouped["Unassigned"].append(row)
+            for member in row.assignee_names:
+                grouped[member].append(row)
+        return dict(grouped)
+
+    def get_due_highlights(self, filters: TaskListFilters | None = None) -> tuple[list[TaskListRow], list[TaskListRow], list[TaskListRow]]:
+        rows = self.list_task_rows(filters)
+        overdue = [row for row in rows if row.is_overdue and row.status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED}]
+        today = [row for row in rows if row.is_due_today and row.status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED}]
+        week = [row for row in rows if row.is_due_this_week and row.status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED}]
+        return overdue, today, week
     def create_household_member(self, *, name: str, email: str = "") -> HouseholdMember:
         if not name.strip():
             raise ValueError("Member name is required")
